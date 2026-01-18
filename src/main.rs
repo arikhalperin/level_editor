@@ -1,0 +1,380 @@
+use rust_embed::RustEmbed;
+#[derive(RustEmbed)]
+#[folder = "src/assets"]
+struct Asset;
+
+mod toolbox;
+use toolbox::{ToolboxLayout, load_toolbox_layout, render_toolbox, get_toolbox_rect};
+
+mod background;
+use background::BackgroundImageController;
+
+use std::collections::HashMap;
+use eframe::egui;
+use egui::{Color32, Pos2, Vec2};
+use tracing::{error, trace, warn};
+
+#[derive(Clone, PartialEq, Debug)]
+enum Tool {
+    Select,
+    Erase,
+    Bitmap(String),
+    DrawPolygon,
+}
+
+struct Polygon {
+    points: Vec<Pos2>,
+    _selected: bool,
+}
+
+struct Entity {
+    pos: Pos2,
+    kind: Tool, // Now supports Bitmap(String)
+}
+
+struct EditorState {
+    tool: Tool,
+    polygons: Vec<Polygon>,
+    entities: Vec<Entity>,
+    drawing_polygon: Option<Vec<Pos2>>,
+    _selected_point: Option<(usize, usize)>,
+    _drag_offset: Option<Vec2>,
+    _selected_polygon: Option<usize>,
+    toolbox_pos: Pos2,
+    dragging_toolbox: bool,
+    drag_start: Option<Pos2>,
+    toolbox_layout: Option<ToolboxLayout>,
+    loaded_textures: HashMap<String, egui::TextureHandle>,
+    background_controller: BackgroundImageController,
+    background_size: Vec2,
+    scroll_offset: Vec2,
+}
+
+impl Default for EditorState {
+    fn default() -> Self {
+        trace!("init_state_start");
+        trace!("embedded_assets_start");
+        for file in Asset::iter() {
+            trace!("embedded_asset={}", file);
+        }
+        trace!("embedded_assets_end");
+        
+        let state = Self {
+            tool: Tool::Select,
+            polygons: vec![],
+            entities: vec![],
+            drawing_polygon: None,
+            _selected_point: None,
+            _drag_offset: None,
+            _selected_polygon: None,
+            toolbox_pos: Pos2::new(10.0, 40.0),
+            dragging_toolbox: false,
+            drag_start: None,
+            toolbox_layout: load_toolbox_layout(),
+            loaded_textures: HashMap::new(),
+            background_controller: BackgroundImageController::new(),
+            background_size: Vec2::ZERO,
+            scroll_offset: Vec2::ZERO,
+        };
+
+        trace!("init_state_done");
+        state
+    }
+}
+
+impl EditorState {
+    fn preload_tool_icons(&mut self, ctx: &egui::Context) {
+        if let Some(layout) = &self.toolbox_layout {
+            trace!("preload_tool_icons_start count={}", layout.tools.len());
+            for tool in &layout.tools {
+                if !self.loaded_textures.contains_key(&tool.icon) {
+                    let asset_path = tool.icon.replace("assets/", "");
+                    if let Some(bytes) = Asset::get(&asset_path) {
+                        if let Ok(img) = image::load_from_memory(bytes.data.as_ref()) {
+                            let size = [img.width() as usize, img.height() as usize];
+                            let rgba = img.to_rgba8();
+                            let raw = rgba.as_raw();
+                            let pixels: Vec<Color32> = raw.chunks(4)
+                                .map(|c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                                .collect();
+                            let image_data = egui::ImageData::Color(egui::ColorImage {
+                                size,
+                                pixels,
+                            }.into());
+                            let tex = ctx.load_texture(&tool.icon, image_data, egui::TextureOptions::default());
+                            self.loaded_textures.insert(tool.icon.clone(), tex);
+                            trace!("preloaded_icon={} size={:?}", tool.icon, size);
+                        }
+                    } else {
+                        warn!("missing_icon_asset={} path={}", tool.icon, asset_path);
+                    }
+                }
+            }
+            trace!("preload_tool_icons_end loaded={}", self.loaded_textures.len());
+        }
+    }
+
+    fn load_background_image(&mut self, path: std::path::PathBuf) {
+        trace!("load_background_image_start path={:?}", path);
+        match self.background_controller.load_image(&path) {
+            Ok((width, height)) => {
+                self.background_size = Vec2::new(width as f32, height as f32);
+                trace!("load_background_image_success width={} height={} scroll_offset={:?}", width, height, self.scroll_offset);
+            }
+            Err(e) => {
+                error!("load_background_image_error error={}", e);
+            }
+        }
+    }
+}
+
+impl eframe::App for EditorState {
+    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        trace!("update_start tool={:?} polygons={} entities={} drawing_points={}", self.tool, self.polygons.len(), self.entities.len(), self.drawing_polygon.as_ref().map(|p| p.len()).unwrap_or(0));
+        // Preload tool icons on first frame
+        if self.toolbox_layout.is_some() && self.loaded_textures.is_empty() {
+            trace!("update_preload_icons");
+            self.preload_tool_icons(ctx);
+        }
+
+        trace!("update_menu_bar_start");
+        // Top menu bar
+        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+            egui::menu::bar(ui, |ui| {
+                ui.menu_button("File", |ui| {
+                    if ui.button("Background Image").clicked() {
+                        ui.close_menu();
+                        // Open file dialog
+                        if let Some(path) = rfd::FileDialog::new()
+                            .add_filter("PNG Image", &["png"])
+                            .pick_file()
+                        {
+                            trace!("menu_background_image_selected path={:?}", path);
+                            self.load_background_image(path);
+                        }
+                    }
+                    if ui.button("Load").clicked() {
+                        trace!("menu_load_clicked");
+                        ui.close_menu();
+                    }
+                    if ui.button("Save").clicked() {
+                        trace!("menu_save_clicked");
+                        ui.close_menu();
+                    }
+                });
+            });
+        });
+
+        trace!("update_menu_bar_end");
+
+        trace!("update_handle_input_start");
+        // Capture screen width and dt once outside the input lock to avoid re-entrance
+        let screen_width = ctx.screen_rect().width();
+        let dt = ctx.input(|i| i.stable_dt);
+
+        // Handle keyboard input for scrolling
+        ctx.input(|i| {
+            // Smooth per-frame scroll while a key is held
+            let speed = 600.0; // pixels per second
+            let step = speed * dt;
+
+            if i.key_down(egui::Key::ArrowLeft) {
+                self.scroll_offset.x = (self.scroll_offset.x - step).max(0.0);
+                trace!("scroll_left step={} offset={:?}", step, self.scroll_offset);
+            }
+            if i.key_down(egui::Key::ArrowRight) {
+                let max_scroll = (self.background_size.x - screen_width).max(0.0);
+                self.scroll_offset.x = (self.scroll_offset.x + step).min(max_scroll);
+                trace!("scroll_right step={} offset={:?} max={}", step, self.scroll_offset, max_scroll);
+            }
+
+        });
+        trace!("update_handle_input_end");
+
+        let pointer = ctx.input(|i| i.pointer.clone());
+        let pointer_pos = pointer.interact_pos();
+        let pointer_pressed = pointer.primary_down();
+        let pointer_clicked = pointer.primary_clicked();
+
+        trace!("update_toolbox_start toolbox_pos={:?} dragging={}", self.toolbox_pos, self.dragging_toolbox);
+        // Render toolbox and get tool selection
+        let mut tool_selected = None;
+        if let Some(layout) = &self.toolbox_layout {
+            tool_selected = render_toolbox(ctx, layout, self.toolbox_pos, &mut self.loaded_textures);
+        }
+        trace!("update_toolbox_end tool_selected={:?}", tool_selected);
+        
+        trace!("update_handle_toolbox_drag_start");
+        // Drag logic for toolbox
+        if pointer_pressed && self.toolbox_layout.is_some() {
+            let layout = self.toolbox_layout.as_ref().unwrap();
+            let toolbox_rect = get_toolbox_rect(layout, self.toolbox_pos);
+            
+            if let Some(pos) = pointer_pos {
+                if toolbox_rect.contains(pos) {
+                    if !self.dragging_toolbox {
+                        self.dragging_toolbox = true;
+                        self.drag_start = pointer_pos;
+                        trace!("toolbox_drag_start pos={:?}", pos);
+                    }
+                }
+            }
+            
+            if self.dragging_toolbox {
+                if let (Some(start), Some(current)) = (self.drag_start, pointer_pos) {
+                    let delta = current - start;
+                    self.toolbox_pos += delta;
+                    self.drag_start = Some(current);
+                    trace!("toolbox_drag_move delta={:?} new_pos={:?}", delta, self.toolbox_pos);
+                }
+            }
+        } else {
+            if !pointer_pressed {
+                self.dragging_toolbox = false;
+                self.drag_start = None;
+                trace!("toolbox_drag_end");
+            }
+        }
+        trace!("update_handle_toolbox_drag_end");
+        // Set tool based on selection
+
+
+        trace!("update_handle_tool_selection_start");
+        if let Some(selected_name) = tool_selected {
+            trace!("tool_selected name={}", selected_name);
+            self.tool = match selected_name.as_str() {
+                "select_tool" => Tool::Select,
+                "delete_tool" => Tool::Erase,
+                "blocker_tool" | "polygon_tool" => Tool::DrawPolygon,
+                _ => Tool::Bitmap(selected_name.clone()),
+            };
+        }
+
+        trace!("update_handle_tool_selection_end current_tool={:?}", self.tool);
+
+        trace!("update_central_panel_start");
+        egui::CentralPanel::default().show(ctx, |ui| {
+            let painter = ui.painter();
+
+            // Draw background image
+            self.background_controller.draw(ctx, self.scroll_offset.x, painter);
+
+            // Draw polygons
+            for (_pi, poly) in self.polygons.iter().enumerate() {
+                for i in 0..poly.points.len() {
+                    let a = poly.points[i] - self.scroll_offset;
+                    let b = poly.points[(i + 1) % poly.points.len()] - self.scroll_offset;
+                    painter.line_segment([a, b], (2.0, Color32::BLUE));
+                    painter.circle_filled(a, 4.0, Color32::RED);
+                }
+            }
+
+            // Draw current drawing polygon
+            if let Some(points) = &self.drawing_polygon {
+                for i in 0..points.len().saturating_sub(1) {
+                    let p1 = points[i] - self.scroll_offset;
+                    let p2 = points[i + 1] - self.scroll_offset;
+                    painter.line_segment([p1, p2], (2.0, Color32::LIGHT_BLUE));
+                }
+                for p in points {
+                    painter.circle_filled(*p - self.scroll_offset, 4.0, Color32::LIGHT_RED);
+                }
+            }
+
+            // Draw entities (replace with icons)
+            for entity in &self.entities {
+                match &entity.kind {
+                    Tool::Bitmap(tool_name) => {
+                        // Find icon from toolbox_layout
+                        if let Some(layout) = &self.toolbox_layout {
+                            if let Some(tool_def) = layout.tools.iter().find(|t| &t.name == tool_name) {
+                                if let Some(texture_handle) = self.loaded_textures.get(&tool_def.icon) {
+                                    ui.painter().image(
+                                        texture_handle.into(),
+                                        egui::Rect::from_center_size(entity.pos - self.scroll_offset, egui::vec2(32.0, 32.0)),
+                                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                                        Color32::WHITE
+                                    );
+                                } else {
+                                    painter.circle_filled(entity.pos - self.scroll_offset, 10.0, Color32::GRAY);
+                                }
+                            } else {
+                                painter.circle_filled(entity.pos - self.scroll_offset, 10.0, Color32::GRAY);
+                            }
+                        } else {
+                            painter.circle_filled(entity.pos - self.scroll_offset, 10.0, Color32::GRAY);
+                        }
+                    }
+                    _ => {
+                        painter.circle_filled(entity.pos - self.scroll_offset, 10.0, Color32::GRAY);
+                    }
+                }
+            }
+
+            // Mouse handling (simplified)
+            if pointer_clicked {
+                if let Some(pos) = pointer_pos {
+                    // Check if click is within toolbox bounds
+                    let toolbox_click = if let Some(layout) = &self.toolbox_layout {
+                        let toolbox_rect = get_toolbox_rect(layout, self.toolbox_pos);
+                        toolbox_rect.contains(pos)
+                    } else {
+                        false
+                    };
+                    
+                    if !toolbox_click {
+                        // Adjust position for scroll offset
+                        let world_pos = pos + self.scroll_offset;
+                        match &self.tool {
+                            Tool::DrawPolygon => {
+                                self.drawing_polygon.get_or_insert(vec![]).push(world_pos);
+                                trace!("draw_polygon_add_point pos={:?} total={}", world_pos, self.drawing_polygon.as_ref().map(|p| p.len()).unwrap_or(0));
+                            }
+                            Tool::Bitmap(_) => {
+                                self.entities.push(Entity { pos: world_pos, kind: self.tool.clone() });
+                                trace!("spawn_entity pos={:?} total={}", world_pos, self.entities.len());
+                            }
+                            Tool::Select => {
+                                // TODO: implement selection logic
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+            }
+        });
+        trace!("update_central_panel_end");
+
+        trace!("update_end scroll_offset={:?} toolbox_pos={:?}", self.scroll_offset, self.toolbox_pos);
+    }
+}
+
+fn init_tracing() {
+    // Prefer env filter for control, fallback to TRACE for everything
+    let env_filter = tracing_subscriber::EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| tracing_subscriber::EnvFilter::new("trace"));
+
+    let subscriber = tracing_subscriber::fmt()
+        .with_env_filter(env_filter)
+        .with_target(true)
+        .compact()
+        .finish();
+
+    if let Err(e) = tracing::subscriber::set_global_default(subscriber) {
+        eprintln!("failed to set global tracing subscriber: {}", e);
+    }
+}
+
+fn main() {
+    init_tracing();
+    let mut options = eframe::NativeOptions::default();
+    options.viewport = egui::ViewportBuilder::default()
+        .with_min_inner_size([800.0, 720.0])
+        .with_max_inner_size([f32::INFINITY, 720.0]);
+    
+    let _ = eframe::run_native(
+        "Level Map Editor",
+        options,
+        Box::new(|_cc| Box::new(EditorState::default())),
+    );
+}

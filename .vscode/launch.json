@@ -1,0 +1,16 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Debug Rust Game Editor",
+            "type": "lldb",
+            "request": "launch",
+            "program": "${workspaceFolder}/target/debug/rust_game_editor",
+            "args": [],
+            "cwd": "${workspaceFolder}",
+            "stopAtEntry": false,
+            "env": {},
+            "console": "integratedTerminal"
+        }
+    ]
+}

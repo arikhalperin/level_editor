@@ -1,0 +1,68 @@
+{
+  "tools": [
+    {
+      "name": "add_point_tool",
+      "description": "Tool to add a point of interest on the map.",
+      "type": "tool",
+      "icon": "assets/addpt.png"
+    },
+    {
+      "name": "remove_point_tool",
+      "description": "Tool to remove a point of interest from the map.",
+      "type": "tool",
+      "icon": "assets/rmpt.png"
+    },
+    {
+      "name": "blocker_tool",
+      "description": "Tool to place a blocker on the map.",
+      "type": "polygon",
+      "icon": "assets/blocker.png"
+    },
+    {
+      "name": "coin_tool",
+      "description": "Tool to add a coin on the map.",
+      "type": "bitmap",
+      "icon": "assets/coin.png"
+    },
+    {
+      "name": "death_trap_tool",
+      "description": "Tool to add a death trap on the map.",
+      "type": "bitmap",
+      "icon": "assets/death_trap.png"
+    },
+    {
+      "name": "delete_tool",
+      "description": "Tool to delete objects from the map.",
+      "type": "tool",
+      "icon": "assets/delete.png"
+    },
+    {
+      "name": "select_tool",
+      "description": "Tool to select objects on the map.",
+      "type": "tool",
+      "icon": "assets/select.png"
+    },
+    {
+      "name": "orc_tool",
+      "description": "Tool to add an orc character on the map.",
+      "type": "bitmap",
+      "icon": "assets/orc.png"
+    },
+    {
+      "name": "polygon_tool",
+      "description": "Tool to draw polygons on the map.",
+      "type": "polygon",
+      "icon": "assets/polygon.png"
+    }
+  ],
+  "main_toolbox": {
+    "name": "Main Toolbox",
+    "tools": [
+      ["select_tool","coin_tool"],
+      ["delete_tool","blocker_tool"],
+      ["polygon_tool","orc_tool"],
+      ["death_trap_tool"]
+    ]
+  }
+
+}
