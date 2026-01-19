@@ -44,6 +44,7 @@ struct EditorState {
     toolbox_pos: Pos2,
     dragging_toolbox: bool,
     drag_start: Option<Pos2>,
+    dragging_polygon: bool,
     toolbox_layout: Option<ToolboxLayout>,
     loaded_textures: HashMap<String, egui::TextureHandle>,
     bitmap_sizes: HashMap<String, Vec2>,
@@ -76,6 +77,7 @@ impl Default for EditorState {
             toolbox_pos: Pos2::new(10.0, 40.0),
             dragging_toolbox: false,
             drag_start: None,
+            dragging_polygon: false,
             toolbox_layout: load_toolbox_layout(),
             loaded_textures: HashMap::new(),
             bitmap_sizes: HashMap::new(),
@@ -120,6 +122,49 @@ impl EditorState {
         
         let size = self.get_bitmap_size(bitmap_name);
         self.bitmap_sizes.insert(bitmap_name.to_string(), size);
+    }
+
+    fn entity_contains_point(&self, entity: &Entity, point: Pos2) -> bool {
+        match &entity.kind {
+            Tool::Bitmap(tool_name) => {
+                let size = self.get_bitmap_size(tool_name);
+                let rect = egui::Rect::from_min_size(entity.pos, size);
+                rect.contains(point)
+            }
+            _ => {
+                // For non-bitmap entities, use a simple radius check
+                entity.pos.distance(point) < 10.0
+            }
+        }
+    }
+
+    fn polygon_contains_point(&self, polygon: &Polygon, point: Pos2) -> bool {
+        if polygon.points.len() < 3 {
+            return false;
+        }
+        
+        // Ray casting algorithm (point-in-polygon test)
+        // Cast a ray from the point to the right and count edge crossings
+        let mut inside = false;
+        let n = polygon.points.len();
+        
+        for i in 0..n {
+            let p1 = polygon.points[i];
+            let p2 = polygon.points[(i + 1) % n];
+            
+            // Check if point is on the same horizontal line as edge
+            if (p1.y > point.y) != (p2.y > point.y) {
+                // Calculate x coordinate of edge at point.y
+                let x_intersect = (p2.x - p1.x) * (point.y - p1.y) / (p2.y - p1.y) + p1.x;
+                
+                // If intersection is to the right of point, toggle inside
+                if point.x < x_intersect {
+                    inside = !inside;
+                }
+            }
+        }
+        
+        inside
     }
 
     fn load_bitmap_texture(&mut self, ctx: &egui::Context, bitmap_name: &str) -> Option<egui::TextureHandle> {
@@ -258,6 +303,26 @@ impl eframe::App for EditorState {
                 self.scroll_offset.x = (self.scroll_offset.x + step).min(max_scroll);
                 trace!("scroll_right step={} offset={:?} max={}", step, self.scroll_offset, max_scroll);
             }
+            
+            // Finalize polygon with Enter key
+            if i.key_pressed(egui::Key::Enter) {
+                if let Some(points) = self.drawing_polygon.take() {
+                    if points.len() >= 3 {
+                        self.polygons.push(Polygon { points, _selected: false });
+                        trace!("polygon_finalized total_polygons={}", self.polygons.len());
+                    } else {
+                        trace!("polygon_discarded_too_few_points points={}", points.len());
+                    }
+                }
+            }
+            
+            // Cancel polygon with Escape key
+            if i.key_pressed(egui::Key::Escape) {
+                if self.drawing_polygon.is_some() {
+                    self.drawing_polygon = None;
+                    trace!("polygon_cancelled");
+                }
+            }
 
         });
         trace!("update_handle_input_end");
@@ -266,6 +331,8 @@ impl eframe::App for EditorState {
         let pointer_pos = pointer.interact_pos();
         let pointer_pressed = pointer.primary_down();
         let pointer_clicked = pointer.primary_clicked();
+        let pointer_released = pointer.primary_released();
+        let secondary_clicked = pointer.secondary_clicked();
 
         trace!("update_toolbox_start toolbox_pos={:?} dragging={}", self.toolbox_pos, self.dragging_toolbox);
         // Render toolbox and get tool selection
@@ -314,6 +381,8 @@ impl eframe::App for EditorState {
         if let Some(selected_name) = tool_selected {
             trace!("tool_selected name={}", selected_name);
             self.current_tool_name = Some(selected_name.clone());
+            // Preload bitmap texture for preview
+            self.load_bitmap_texture(ctx, &selected_name);
             self.tool = match selected_name.as_str() {
                 "select_tool" => Tool::Select,
                 "delete_tool" => Tool::Erase,
@@ -324,6 +393,59 @@ impl eframe::App for EditorState {
 
         trace!("update_handle_tool_selection_end current_tool={:?}", self.tool);
 
+        trace!("update_entity_drag_start dragging={} selected={:?}", self.dragging_entity, self.selected_entity);
+        // Handle entity dragging
+        if self.dragging_entity && pointer_pressed {
+            if let (Some(pos), Some(entity_idx)) = (pointer_pos, self.selected_entity) {
+                let world_pos = pos + self.scroll_offset;
+                if entity_idx < self.entities.len() {
+                    // Update entity position with drag offset
+                    if let Some(offset) = self._drag_offset {
+                        self.entities[entity_idx].pos = world_pos - offset;
+                        trace!("entity_drag_update idx={} pos={:?}", entity_idx, self.entities[entity_idx].pos);
+                    }
+                }
+            }
+        }
+        
+        if pointer_released && self.dragging_entity {
+            self.dragging_entity = false;
+            self._drag_offset = None;
+            trace!("entity_drag_end entity={:?}", self.selected_entity);
+        }
+        trace!("update_entity_drag_end");
+
+        trace!("update_polygon_drag_start dragging={} selected={:?}", self.dragging_polygon, self._selected_polygon);
+        // Handle polygon dragging
+        if self.dragging_polygon && pointer_pressed {
+            if let (Some(pos), Some(poly_idx)) = (pointer_pos, self._selected_polygon) {
+                let world_pos = pos + self.scroll_offset;
+                if poly_idx < self.polygons.len() {
+                    // Update all polygon points with drag offset
+                    if let Some(offset) = self._drag_offset {
+                        let delta = world_pos - offset;
+                        // Calculate the delta from the last frame
+                        if let Some(last_pos) = self.drag_start {
+                            let frame_delta = pos - last_pos;
+                            for point in &mut self.polygons[poly_idx].points {
+                                *point += frame_delta;
+                            }
+                            self.drag_start = Some(pos);
+                            trace!("polygon_drag_update idx={} delta={:?}", poly_idx, frame_delta);
+                        }
+                    }
+                }
+            }
+        }
+        
+        if pointer_released && self.dragging_polygon {
+            self.dragging_polygon = false;
+            self._drag_offset = None;
+            self.drag_start = None;
+            trace!("polygon_drag_end polygon={:?}", self._selected_polygon);
+        }
+        trace!("update_polygon_drag_end");
+
         trace!("update_central_panel_start");
         egui::CentralPanel::default().show(ctx, |ui| {
             let painter = ui.painter();
@@ -332,12 +454,16 @@ impl eframe::App for EditorState {
             self.background_controller.draw(ctx, self.scroll_offset.x, painter);
 
             // Draw polygons
-            for (_pi, poly) in self.polygons.iter().enumerate() {
+            for (pi, poly) in self.polygons.iter().enumerate() {
+                let is_selected = self._selected_polygon == Some(pi);
+                let line_color = if is_selected { Color32::GREEN } else { Color32::BLUE };
+                let point_color = if is_selected { Color32::YELLOW } else { Color32::RED };
+                
                 for i in 0..poly.points.len() {
                     let a = poly.points[i] - self.scroll_offset;
                     let b = poly.points[(i + 1) % poly.points.len()] - self.scroll_offset;
-                    painter.line_segment([a, b], (2.0, Color32::BLUE));
-                    painter.circle_filled(a, 4.0, Color32::RED);
+                    painter.line_segment([a, b], (2.0, line_color));
+                    painter.circle_filled(a, 4.0, point_color);
                 }
             }
 
@@ -397,6 +523,24 @@ impl eframe::App for EditorState {
                 }
             }
 
+            // Draw bitmap preview at mouse position when bitmap tool selected
+            if let Some(ref tool_name) = self.current_tool_name {
+                if let Some(mouse_pos) = pointer_pos {
+                    if let Some(texture_handle) = self.bitmap_textures.get(tool_name) {
+                        let bitmap_size = self.get_bitmap_size(tool_name);
+                        let rect = egui::Rect::from_min_size(mouse_pos - self.scroll_offset, bitmap_size);
+                        // Draw with 50% opacity (semi-transparent)
+                        let semi_transparent = Color32::from_rgba_unmultiplied(255, 255, 255, 128);
+                        ui.painter().image(
+                            texture_handle.id(),
+                            rect,
+                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                            semi_transparent
+                        );
+                    }
+                }
+            }
+
             // Mouse handling (simplified)
             if pointer_clicked {
                 if let Some(pos) = pointer_pos {
@@ -421,10 +565,64 @@ impl eframe::App for EditorState {
                                 trace!("spawn_entity pos={:?} total={}", world_pos, self.entities.len());
                             }
                             Tool::Select => {
-                                // TODO: implement selection logic
+                                // Check if clicking on an entity first (iterate backwards for top-most first)
+                                let mut clicked_entity = None;
+                                for (idx, entity) in self.entities.iter().enumerate().rev() {
+                                    if self.entity_contains_point(entity, world_pos) {
+                                        clicked_entity = Some(idx);
+                                        break;
+                                    }
+                                }
+                                
+                                if let Some(idx) = clicked_entity {
+                                    self.selected_entity = Some(idx);
+                                    self.dragging_entity = true;
+                                    self._selected_polygon = None;
+                                    self.dragging_polygon = false;
+                                    // Store offset from entity position to click position
+                                    self._drag_offset = Some(world_pos - self.entities[idx].pos);
+                                    trace!("entity_drag_start idx={} offset={:?}", idx, self._drag_offset);
+                                } else {
+                                    // Check if clicking on a polygon
+                                    let mut clicked_polygon = None;
+                                    for (idx, polygon) in self.polygons.iter().enumerate().rev() {
+                                        if self.polygon_contains_point(polygon, world_pos) {
+                                            clicked_polygon = Some(idx);
+                                            break;
+                                        }
+                                    }
+                                    
+                                    if let Some(idx) = clicked_polygon {
+                                        self._selected_polygon = Some(idx);
+                                        self.dragging_polygon = true;
+                                        self.selected_entity = None;
+                                        self.dragging_entity = false;
+                                        self._drag_offset = pointer_pos.map(|p| Vec2::new(p.x, p.y));
+                                        self.drag_start = pointer_pos;
+                                        trace!("polygon_drag_start idx={}", idx);
+                                    } else {
+                                        self.selected_entity = None;
+                                        self.dragging_entity = false;
+                                        self._selected_polygon = None;
+                                        self.dragging_polygon = false;
+                                        trace!("deselect_all");
+                                    }
+                                }
                             }
                             _ => {}
                         }
+                    }
+                }
+            }
+            
+            // Right-click to finalize current polygon
+            if secondary_clicked && self.tool == Tool::DrawPolygon {
+                if let Some(points) = self.drawing_polygon.take() {
+                    if points.len() >= 3 {
+                        self.polygons.push(Polygon { points, _selected: false });
+                        trace!("polygon_finalized_right_click total_polygons={}", self.polygons.len());
+                    } else {
+                        trace!("polygon_discarded_too_few_points points={}", points.len());
                     }
                 }
             }
