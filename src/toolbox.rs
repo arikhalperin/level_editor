@@ -55,6 +55,7 @@ pub fn render_toolbox(
     layout: &ToolboxLayout,
     toolbox_pos: Pos2,
     loaded_textures: &mut HashMap<String, egui::TextureHandle>,
+    current_tool: &Option<String>,
 ) -> Option<String> {
     trace!("render_toolbox_start pos={:?} textures_loaded={} rows={}", toolbox_pos, loaded_textures.len(), layout.main_toolbox.tools.len());
     let rows = &layout.main_toolbox.tools;
@@ -83,29 +84,38 @@ pub fn render_toolbox(
                                         } else {
                                             load_tool_texture(ctx, tool_def, loaded_textures)
                                         };
+                                        
+                                        // Check if this tool is currently selected
+                                        let is_selected = current_tool.as_ref() == Some(&tool_def.name);
+                                        
                                         let resp = ui.add(
                                             egui::Image::new(&texture_handle)
                                                 .fit_to_exact_size(thumb_size)
                                                 .sense(egui::Sense::click())
                                         );
 
-                                        // Visual feedback on hover/press
-                                        let fill = if resp.is_pointer_button_down_on() {
-                                            Color32::from_gray(220)
-                                        } else if resp.hovered() {
-                                            Color32::from_gray(200)
-                                        } else {
-                                            Color32::TRANSPARENT
-                                        };
-                                        let stroke = if resp.is_pointer_button_down_on() {
+                                        // Draw frame for selected tool, and additional feedback for hover/press
+                                        let frame_stroke = if is_selected {
+                                            egui::Stroke::new(3.0, Color32::YELLOW)
+                                        } else if resp.is_pointer_button_down_on() {
                                             egui::Stroke::new(2.0, Color32::WHITE)
                                         } else if resp.hovered() {
                                             egui::Stroke::new(1.0, Color32::LIGHT_GRAY)
                                         } else {
                                             egui::Stroke::NONE
                                         };
+                                        
+                                        // Only fill on hover/press, not when selected (so thumbnail shows clearly)
+                                        let fill = if resp.is_pointer_button_down_on() {
+                                            Color32::from_rgba_unmultiplied(255, 255, 255, 40)
+                                        } else if resp.hovered() {
+                                            Color32::from_rgba_unmultiplied(255, 255, 255, 20)
+                                        } else {
+                                            Color32::TRANSPARENT
+                                        };
+                                        
                                         ui.painter().rect_filled(resp.rect.shrink(1.0), 4.0, fill);
-                                        ui.painter().rect_stroke(resp.rect.shrink(1.0), 4.0, stroke);
+                                        ui.painter().rect_stroke(resp.rect.shrink(1.0), 4.0, frame_stroke);
 
                                         if resp.clicked() {
                                             tool_selected = Some(tool_def.name.clone());

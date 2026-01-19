@@ -34,6 +34,7 @@ struct Entity {
 
 struct EditorState {
     tool: Tool,
+    current_tool_name: Option<String>,
     polygons: Vec<Polygon>,
     entities: Vec<Entity>,
     drawing_polygon: Option<Vec<Pos2>>,
@@ -45,9 +46,13 @@ struct EditorState {
     drag_start: Option<Pos2>,
     toolbox_layout: Option<ToolboxLayout>,
     loaded_textures: HashMap<String, egui::TextureHandle>,
+    bitmap_sizes: HashMap<String, Vec2>,
+    bitmap_textures: HashMap<String, egui::TextureHandle>,
     background_controller: BackgroundImageController,
     background_size: Vec2,
     scroll_offset: Vec2,
+    selected_entity: Option<usize>,
+    dragging_entity: bool,
 }
 
 impl Default for EditorState {
@@ -61,6 +66,7 @@ impl Default for EditorState {
         
         let state = Self {
             tool: Tool::Select,
+            current_tool_name: None,
             polygons: vec![],
             entities: vec![],
             drawing_polygon: None,
@@ -72,9 +78,13 @@ impl Default for EditorState {
             drag_start: None,
             toolbox_layout: load_toolbox_layout(),
             loaded_textures: HashMap::new(),
+            bitmap_sizes: HashMap::new(),
+            bitmap_textures: HashMap::new(),
             background_controller: BackgroundImageController::new(),
             background_size: Vec2::ZERO,
             scroll_offset: Vec2::ZERO,
+            selected_entity: None,
+            dragging_entity: false,
         };
 
         trace!("init_state_done");
@@ -83,6 +93,67 @@ impl Default for EditorState {
 }
 
 impl EditorState {
+    fn get_bitmap_size(&self, bitmap_name: &str) -> Vec2 {
+        if let Some(size) = self.bitmap_sizes.get(bitmap_name) {
+            return *size;
+        }
+        
+        // Try to load from toolbox layout to find the actual bitmap asset
+        if let Some(layout) = &self.toolbox_layout {
+            if let Some(tool_def) = layout.tools.iter().find(|t| &t.name == bitmap_name) {
+                let asset_path = tool_def.icon.replace("assets/", "");
+                if let Some(bytes) = Asset::get(&asset_path) {
+                    if let Ok(img) = image::load_from_memory(bytes.data.as_ref()) {
+                        let size = Vec2::new(img.width() as f32, img.height() as f32);
+                        return size;
+                    }
+                }
+            }
+        }
+        Vec2::new(32.0, 32.0) // fallback
+    }
+    
+    fn cache_bitmap_size(&mut self, bitmap_name: &str) {
+        if self.bitmap_sizes.contains_key(bitmap_name) {
+            return;
+        }
+        
+        let size = self.get_bitmap_size(bitmap_name);
+        self.bitmap_sizes.insert(bitmap_name.to_string(), size);
+    }
+
+    fn load_bitmap_texture(&mut self, ctx: &egui::Context, bitmap_name: &str) -> Option<egui::TextureHandle> {
+        if let Some(tex) = self.bitmap_textures.get(bitmap_name) {
+            return Some(tex.clone());
+        }
+        
+        // Try to load from toolbox layout to find the actual bitmap asset
+        if let Some(layout) = &self.toolbox_layout {
+            if let Some(tool_def) = layout.tools.iter().find(|t| &t.name == bitmap_name) {
+                let asset_path = tool_def.icon.replace("assets/", "");
+                if let Some(bytes) = Asset::get(&asset_path) {
+                    if let Ok(img) = image::load_from_memory(bytes.data.as_ref()) {
+                        let size = [img.width() as usize, img.height() as usize];
+                        let rgba = img.to_rgba8();
+                        let raw = rgba.as_raw();
+                        let pixels: Vec<Color32> = raw.chunks(4)
+                            .map(|c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                            .collect();
+                        let image_data = egui::ImageData::Color(egui::ColorImage {
+                            size,
+                            pixels,
+                        }.into());
+                        let tex = ctx.load_texture(&format!("bitmap_{}", bitmap_name), image_data, egui::TextureOptions::default());
+                        self.bitmap_textures.insert(bitmap_name.to_string(), tex.clone());
+                        trace!("loaded_bitmap_texture={} size={:?}", bitmap_name, size);
+                        return Some(tex);
+                    }
+                }
+            }
+        }
+        None
+    }
+
     fn preload_tool_icons(&mut self, ctx: &egui::Context) {
         if let Some(layout) = &self.toolbox_layout {
             trace!("preload_tool_icons_start count={}", layout.tools.len());
@@ -200,7 +271,7 @@ impl eframe::App for EditorState {
         // Render toolbox and get tool selection
         let mut tool_selected = None;
         if let Some(layout) = &self.toolbox_layout {
-            tool_selected = render_toolbox(ctx, layout, self.toolbox_pos, &mut self.loaded_textures);
+            tool_selected = render_toolbox(ctx, layout, self.toolbox_pos, &mut self.loaded_textures, &self.current_tool_name);
         }
         trace!("update_toolbox_end tool_selected={:?}", tool_selected);
         
@@ -242,6 +313,7 @@ impl eframe::App for EditorState {
         trace!("update_handle_tool_selection_start");
         if let Some(selected_name) = tool_selected {
             trace!("tool_selected name={}", selected_name);
+            self.current_tool_name = Some(selected_name.clone());
             self.tool = match selected_name.as_str() {
                 "select_tool" => Tool::Select,
                 "delete_tool" => Tool::Erase,
@@ -281,32 +353,46 @@ impl eframe::App for EditorState {
                 }
             }
 
-            // Draw entities (replace with icons)
-            for entity in &self.entities {
-                match &entity.kind {
+            // Draw entities (bitmaps at full scale)
+            // First collect the data we need to avoid borrow conflicts
+            let entities_to_draw: Vec<_> = self.entities.iter().enumerate()
+                .map(|(idx, entity)| {
+                    (idx, entity.pos, entity.kind.clone(), self.selected_entity == Some(idx))
+                })
+                .collect();
+            
+            // Preload all bitmap textures
+            for (_, _, kind, _) in &entities_to_draw {
+                if let Tool::Bitmap(tool_name) = kind {
+                    self.load_bitmap_texture(ctx, tool_name);
+                }
+            }
+            
+            // Now render the entities
+            for (_entity_idx, entity_pos, kind, is_selected) in entities_to_draw {
+                match &kind {
                     Tool::Bitmap(tool_name) => {
-                        // Find icon from toolbox_layout
-                        if let Some(layout) = &self.toolbox_layout {
-                            if let Some(tool_def) = layout.tools.iter().find(|t| &t.name == tool_name) {
-                                if let Some(texture_handle) = self.loaded_textures.get(&tool_def.icon) {
-                                    ui.painter().image(
-                                        texture_handle.into(),
-                                        egui::Rect::from_center_size(entity.pos - self.scroll_offset, egui::vec2(32.0, 32.0)),
-                                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-                                        Color32::WHITE
-                                    );
-                                } else {
-                                    painter.circle_filled(entity.pos - self.scroll_offset, 10.0, Color32::GRAY);
-                                }
-                            } else {
-                                painter.circle_filled(entity.pos - self.scroll_offset, 10.0, Color32::GRAY);
+                        // Get cached texture (should exist from preload above)
+                        if let Some(texture_handle) = self.bitmap_textures.get(tool_name) {
+                            let bitmap_size = self.get_bitmap_size(tool_name);
+                            let rect = egui::Rect::from_min_size(entity_pos - self.scroll_offset, bitmap_size);
+                            ui.painter().image(
+                                texture_handle.id(),
+                                rect,
+                                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                                Color32::WHITE
+                            );
+                            
+                            // Draw selection outline if selected
+                            if is_selected {
+                                ui.painter().rect_stroke(rect, 0.0, egui::Stroke::new(2.0, Color32::GREEN));
                             }
                         } else {
-                            painter.circle_filled(entity.pos - self.scroll_offset, 10.0, Color32::GRAY);
+                            painter.circle_filled(entity_pos - self.scroll_offset, 10.0, Color32::GRAY);
                         }
                     }
                     _ => {
-                        painter.circle_filled(entity.pos - self.scroll_offset, 10.0, Color32::GRAY);
+                        painter.circle_filled(entity_pos - self.scroll_offset, 10.0, Color32::GRAY);
                     }
                 }
             }
