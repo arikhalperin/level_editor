@@ -653,7 +653,45 @@ impl eframe::App for EditorState {
                                 }
                                 }
                             }
-                            _ => {}
+                            Tool::Erase => {
+                                // Check if clicking on any entity to delete it
+                                let mut clicked_entity = None;
+                                for (idx, entity) in self.entities.iter().enumerate().rev() {
+                                    if entity.contains_point(world_pos) {
+                                        clicked_entity = Some(idx);
+                                        break;
+                                    }
+                                }
+                                
+                                if let Some(idx) = clicked_entity {
+                                    let entity_type = self.entities[idx].entity_type().to_string();
+                                    self.entities.remove(idx);
+                                    // Clear selection if we deleted the selected entity
+                                    if self.selected_entity == Some(idx) {
+                                        self.selected_entity = None;
+                                    } else if let Some(sel_idx) = self.selected_entity {
+                                        // Adjust selection index if we deleted an entity before it
+                                        if idx < sel_idx {
+                                            self.selected_entity = Some(sel_idx - 1);
+                                        }
+                                    }
+                                    // Clear edit mode if we deleted the entity being edited
+                                    if self.editing_polygon_entity == Some(idx) {
+                                        self.editing_polygon_entity = None;
+                                        self.editing_polygon_point = None;
+                                        self.dragging_polygon_point = false;
+                                    } else if let Some(edit_idx) = self.editing_polygon_entity {
+                                        // Adjust edit index if we deleted an entity before it
+                                        if idx < edit_idx {
+                                            self.editing_polygon_entity = Some(edit_idx - 1);
+                                        }
+                                    }
+                                    trace!("entity_deleted idx={} type={} remaining={}", idx, entity_type, self.entities.len());
+                                }
+                                // Update click tracking
+                                self.last_click_time = Some(current_time);
+                                self.last_click_pos = Some(world_pos);
+                            }
                         }
                     }
                 }
