@@ -44,6 +44,11 @@ struct EditorState {
     scroll_offset: Vec2,
     selected_entity: Option<usize>,
     dragging_entity: bool,
+    last_click_time: Option<f64>,
+    last_click_pos: Option<Pos2>,
+    editing_polygon_entity: Option<usize>,
+    editing_polygon_point: Option<usize>,
+    dragging_polygon_point: bool,
 }
 
 impl Default for EditorState {
@@ -74,6 +79,11 @@ impl Default for EditorState {
             scroll_offset: Vec2::ZERO,
             selected_entity: None,
             dragging_entity: false,
+            last_click_time: None,
+            last_click_pos: None,
+            editing_polygon_entity: None,
+            editing_polygon_point: None,
+            dragging_polygon_point: false,
         };
 
         trace!("init_state_done");
@@ -260,11 +270,34 @@ impl eframe::App for EditorState {
                 }
             }
             
-            // Cancel polygon with Escape key
+            // Cancel polygon or exit polygon edit mode with Escape key
             if i.key_pressed(egui::Key::Escape) {
                 if self.drawing_polygon.is_some() {
                     self.drawing_polygon = None;
                     trace!("polygon_cancelled");
+                } else if self.editing_polygon_entity.is_some() {
+                    self.editing_polygon_entity = None;
+                    self.editing_polygon_point = None;
+                    self.dragging_polygon_point = false;
+                    self.selected_entity = None;
+                    trace!("polygon_edit_mode_cancelled");
+                }
+            }
+            
+            // Delete selected polygon point with Delete or Backspace key
+            if i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace) {
+                if let (Some(entity_idx), Some(point_idx)) = (self.editing_polygon_entity, self.editing_polygon_point) {
+                    if entity_idx < self.entities.len() {
+                        if let Entity::Polygon(ref mut poly) = self.entities[entity_idx] {
+                            if poly.points.len() > 3 && point_idx < poly.points.len() {
+                                poly.points.remove(point_idx);
+                                self.editing_polygon_point = None;
+                                trace!("polygon_point_deleted entity={} point={} remaining={}", entity_idx, point_idx, poly.points.len());
+                            } else if poly.points.len() <= 3 {
+                                trace!("polygon_point_delete_blocked_min_points entity={} points={}", entity_idx, poly.points.len());
+                            }
+                        }
+                    }
                 }
             }
 
@@ -338,6 +371,26 @@ impl eframe::App for EditorState {
         trace!("update_handle_tool_selection_end current_tool={:?}", self.tool);
 
         trace!("update_entity_drag_start dragging={} selected={:?}", self.dragging_entity, self.selected_entity);
+        // Handle polygon point dragging
+        if self.dragging_polygon_point && pointer_pressed {
+            if let (Some(pos), Some(entity_idx), Some(point_idx)) = (pointer_pos, self.editing_polygon_entity, self.editing_polygon_point) {
+                if entity_idx < self.entities.len() {
+                    if let Entity::Polygon(ref mut poly) = self.entities[entity_idx] {
+                        if point_idx < poly.points.len() {
+                            let world_pos = pos + self.scroll_offset;
+                            poly.points[point_idx] = world_pos;
+                            trace!("polygon_point_drag entity={} point={} pos={:?}", entity_idx, point_idx, world_pos);
+                        }
+                    }
+                }
+            }
+        }
+        
+        if pointer_released && self.dragging_polygon_point {
+            self.dragging_polygon_point = false;
+            trace!("polygon_point_drag_end");
+        }
+        
         // Handle entity dragging
         if self.dragging_entity && pointer_pressed {
             if let (Some(pos), Some(entity_idx)) = (pointer_pos, self.selected_entity) {
@@ -400,6 +453,7 @@ impl eframe::App for EditorState {
             // Draw all entities
             for (idx, entity) in self.entities.iter().enumerate() {
                 let is_selected = self.selected_entity == Some(idx);
+                let is_editing = self.editing_polygon_entity == Some(idx);
                 
                 // Special handling for bitmap entities (need textures)
                 if let Some(bitmap_entity) = entity.as_bitmap() {
@@ -420,6 +474,20 @@ impl eframe::App for EditorState {
                 } else {
                     // For polygon entities, use the trait method
                     entity.draw(painter, self.scroll_offset, is_selected);
+                    
+                    // If editing this polygon, draw points with larger markers
+                    if is_editing {
+                        if let Some(polygon) = entity.as_polygon() {
+                            for (point_idx, point) in polygon.points.iter().enumerate() {
+                                let screen_pos = *point - self.scroll_offset;
+                                let is_selected_point = self.editing_polygon_point == Some(point_idx);
+                                let point_color = if is_selected_point { Color32::YELLOW } else { Color32::WHITE };
+                                let point_radius = if is_selected_point { 6.0 } else { 5.0 };
+                                painter.circle_filled(screen_pos, point_radius, point_color);
+                                painter.circle_stroke(screen_pos, point_radius, (1.0, Color32::BLACK));
+                            }
+                        }
+                    }
                 }
             }
 
@@ -455,10 +523,40 @@ impl eframe::App for EditorState {
                     if !toolbox_click {
                         // Adjust position for scroll offset
                         let world_pos = pos + self.scroll_offset;
+                        
+                        // Detect double-click
+                        let current_time = ctx.input(|i| i.time);
+                        let is_double_click = if let (Some(last_time), Some(last_pos)) = (self.last_click_time, self.last_click_pos) {
+                            let time_diff = current_time - last_time;
+                            let distance = (world_pos - last_pos).length();
+                            time_diff < 0.3 && distance < 10.0  // 300ms and 10 pixels threshold
+                        } else {
+                            false
+                        };
+                        
                         match &self.tool {
                             Tool::DrawPolygon => {
-                                self.drawing_polygon.get_or_insert(vec![]).push(world_pos);
-                                trace!("draw_polygon_add_point pos={:?} total={}", world_pos, self.drawing_polygon.as_ref().map(|p| p.len()).unwrap_or(0));
+                                if is_double_click {
+                                    // Double-click detected, close the polygon
+                                    if let Some(points) = self.drawing_polygon.take() {
+                                        if points.len() >= 3 {
+                                            self.entities.push(Entity::new_polygon(points));
+                                            trace!("polygon_finalized_double_click total_entities={}", self.entities.len());
+                                        } else {
+                                            trace!("polygon_discarded_too_few_points points={}", points.len());
+                                        }
+                                    }
+                                    // Reset click tracking to prevent triple-click issues
+                                    self.last_click_time = None;
+                                    self.last_click_pos = None;
+                                } else {
+                                    // Single click - add point to polygon
+                                    self.drawing_polygon.get_or_insert(vec![]).push(world_pos);
+                                    trace!("draw_polygon_add_point pos={:?} total={}", world_pos, self.drawing_polygon.as_ref().map(|p| p.len()).unwrap_or(0));
+                                    // Update click tracking
+                                    self.last_click_time = Some(current_time);
+                                    self.last_click_pos = Some(world_pos);
+                                }
                             }
                             Tool::Bitmap(_) => {
                                 let bitmap_name = match &self.tool {
@@ -467,8 +565,50 @@ impl eframe::App for EditorState {
                                 };
                                 self.entities.push(Entity::new_bitmap(world_pos, bitmap_name, self.toolbox_layout.as_ref()));
                                 trace!("spawn_entity pos={:?} total={}", world_pos, self.entities.len());
+                                // Update click tracking for non-polygon tools
+                                self.last_click_time = Some(current_time);
+                                self.last_click_pos = Some(world_pos);
                             }
                             Tool::Select => {
+                                // If in polygon edit mode, check for point clicks first
+                                let mut handle_normal_selection = true;
+                                if let Some(editing_idx) = self.editing_polygon_entity {
+                                    if editing_idx < self.entities.len() {
+                                        if let Entity::Polygon(ref poly) = self.entities[editing_idx] {
+                                            let mut clicked_point = None;
+                                            // Check if clicking on any point (larger hit area)
+                                            for (point_idx, point) in poly.points.iter().enumerate() {
+                                                if (world_pos - *point).length() < 8.0 {
+                                                    clicked_point = Some(point_idx);
+                                                    break;
+                                                }
+                                            }
+                                            
+                                            if let Some(point_idx) = clicked_point {
+                                                // Clicked on a point - select and start dragging it
+                                                self.editing_polygon_point = Some(point_idx);
+                                                self.dragging_polygon_point = true;
+                                                trace!("polygon_point_selected entity={} point={}", editing_idx, point_idx);
+                                                handle_normal_selection = false;
+                                            } else if !poly.points.iter().any(|p| (world_pos - *p).length() < 8.0) && !self.entities[editing_idx].contains_point(world_pos) {
+                                                // Clicked outside polygon - exit edit mode
+                                                self.editing_polygon_entity = None;
+                                                self.editing_polygon_point = None;
+                                                self.selected_entity = None;
+                                                trace!("exit_polygon_edit_mode");
+                                                handle_normal_selection = false;
+                                            } else {
+                                                handle_normal_selection = false;
+                                            }
+                                            // Update click tracking
+                                            self.last_click_time = Some(current_time);
+                                            self.last_click_pos = Some(world_pos);
+                                        }
+                                    }
+                                }
+                                
+                                if handle_normal_selection {
+                                
                                 // Check if clicking on any entity (iterate backwards for top-most first)
                                 let mut clicked_entity = None;
                                 for (idx, entity) in self.entities.iter().enumerate().rev() {
@@ -479,14 +619,38 @@ impl eframe::App for EditorState {
                                 }
                                 
                                 if let Some(idx) = clicked_entity {
-                                    self.selected_entity = Some(idx);
-                                    self.dragging_entity = true;
-                                    self.drag_start = pointer_pos;
-                                    trace!("entity_drag_start idx={} type={}", idx, self.entities[idx].entity_type());
+                                    // Check for double-click on polygon to enter edit mode
+                                    if is_double_click && matches!(self.entities[idx], Entity::Polygon(_)) {
+                                        self.editing_polygon_entity = Some(idx);
+                                        self.editing_polygon_point = None;
+                                        self.selected_entity = Some(idx);
+                                        self.dragging_entity = false;
+                                        trace!("enter_polygon_edit_mode idx={}", idx);
+                                        // Reset click tracking to prevent further processing
+                                        self.last_click_time = None;
+                                        self.last_click_pos = None;
+                                    } else {
+                                        // Single click - normal selection and dragging
+                                        self.selected_entity = Some(idx);
+                                        self.dragging_entity = true;
+                                        self.drag_start = pointer_pos;
+                                        self.editing_polygon_entity = None;
+                                        self.editing_polygon_point = None;
+                                        trace!("entity_drag_start idx={} type={}", idx, self.entities[idx].entity_type());
+                                        // Update click tracking for select tool
+                                        self.last_click_time = Some(current_time);
+                                        self.last_click_pos = Some(world_pos);
+                                    }
                                 } else {
                                     self.selected_entity = None;
                                     self.dragging_entity = false;
+                                    self.editing_polygon_entity = None;
+                                    self.editing_polygon_point = None;
                                     trace!("deselect_all");
+                                    // Update click tracking for select tool
+                                    self.last_click_time = Some(current_time);
+                                    self.last_click_pos = Some(world_pos);
+                                }
                                 }
                             }
                             _ => {}
@@ -505,6 +669,9 @@ impl eframe::App for EditorState {
                         trace!("polygon_discarded_too_few_points points={}", points.len());
                     }
                 }
+                // Reset click tracking after closing polygon
+                self.last_click_time = None;
+                self.last_click_pos = None;
             }
         });
         trace!("update_central_panel_end");
