@@ -13,6 +13,8 @@ pub struct ToolDef {
     #[allow(dead_code)]
     pub tool_type: String,
     pub icon: String,
+    #[serde(default)]
+    pub color: Option<String>,
 }
 
 #[derive(Deserialize, Debug)]

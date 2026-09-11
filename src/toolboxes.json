@@ -16,7 +16,8 @@
       "name": "blocker_tool",
       "description": "Tool to place a blocker on the map.",
       "type": "polygon",
-      "icon": "assets/blocker.png"
+      "icon": "assets/blocker.png",
+      "color": "#FFFF00"
     },
     {
       "name": "coin_tool",
@@ -52,7 +53,15 @@
       "name": "polygon_tool",
       "description": "Tool to draw polygons on the map.",
       "type": "polygon",
-      "icon": "assets/polygon.png"
+      "icon": "assets/polygon.png",
+      "color": "#0000FF"
+    },
+    {
+      "name": "wall_tool",
+      "description": "Tool to add a platform on the map.",
+      "type": "polygon",
+      "icon": "assets/wall.png",
+      "color": "#FF0000"
     }
   ],
   "main_toolbox": {
@@ -61,8 +70,7 @@
       ["select_tool","coin_tool"],
       ["delete_tool","blocker_tool"],
       ["polygon_tool","orc_tool"],
-      ["death_trap_tool"]
+      ["death_trap_tool","wall_tool"]
     ]
   }
-
 }

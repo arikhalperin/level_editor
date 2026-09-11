@@ -13,3 +13,12 @@ rust-embed = "8.0"
 rfd = "0.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
+dirs = "5.0"
+
+# objc2 0.4 (pulled in via eframe 0.27 -> winit 0.29 -> icrate) verifies ObjC
+# method signatures under debug_assertions. On recent macOS, NSFastEnumeration's
+# countByEnumeratingWithState:objects:count: reports a 'Q' return where objc2
+# expects 'q', so the check aborts at startup. Compile just that crate without
+# debug assertions to skip the bogus verification.
+[profile.dev.package.objc2]
+debug-assertions = false
