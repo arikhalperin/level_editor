@@ -106,7 +106,10 @@ impl HelpContent {
             HelpEntry::new(redo_label, "Redo the last undone change."),
             HelpEntry::new("F1 / ?", "Show or hide this help."),
             HelpEntry::new("F5", "Start or stop play mode."),
-            HelpEntry::new("R", "Respawn the character at the spawn point (play mode)."),
+            HelpEntry::new(
+                "R",
+                "Restart the run: character back at the spawn point, orcs and coins restored (play mode).",
+            ),
             HelpEntry::new(
                 "A / D  or  \u{2190} / \u{2192}",
                 "Move the character left and right (play mode).",
@@ -117,6 +120,9 @@ impl HelpContent {
             ),
             HelpEntry::new("Space or Z", "Jump, and wall jump off a wall (play mode)."),
             HelpEntry::new("Shift, K or C", "Dash (play mode)."),
+            HelpEntry::new("J or X", "Swing the katana; hold up or down to slash that way (play mode)."),
+            HelpEntry::new("L", "Raise the shield: 2 s invulnerable, then a 5 s cooldown (play mode)."),
+            HelpEntry::new("F2", "Show or hide the combat debug view (slash hitbox, orc ranges)."),
         ];
 
         let mouse = vec![
@@ -271,6 +277,9 @@ mod tests {
                 "W / S  or  ↑ / ↓",
                 "Space or Z",
                 "Shift, K or C",
+                "J or X",
+                "L",
+                "F2",
             ],
             "keyboard section must match the keys handled in EditorState::update exactly"
         );

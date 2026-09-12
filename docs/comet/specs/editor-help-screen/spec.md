@@ -2,6 +2,8 @@
 
 Complete target behaviour of the in-app help screen.
 
+> Amended 2026-09-12 by the play-combat-simulation change: the Keyboard section gained the attack, shield and debug keys (`J`/`X`, `L`, `F2`) and the `R` row now describes restarting the run.
+
 > Amended 2026-09-12 by the level-size-and-play-simulation change: the Keyboard section gained the play-mode keys, the Mouse section a play-mode click row, and the former four-item "File menu" section became a "Menus" section covering the File, Level, Play and Help menus. The help's guarantee — it lists every key and command the editor handles — is unchanged.
 
 ## Opening and closing
@@ -37,6 +39,9 @@ Lists every key the input handler responds to, and nothing else:
 | W / S or ↑ / ↓ | Look up and down; down also fast-falls and climbs down (play mode). |
 | Space or Z | Jump, and wall jump off a wall (play mode). |
 | Shift, K or C | Dash (play mode). |
+| J or X | Swing the katana; hold up or down to slash that way (play mode). |
+| L | Raise the shield: 2 s invulnerable, then a 5 s cooldown (play mode). |
+| F2 | Show or hide the combat debug view (slash hitbox, orc ranges). |
 
 - Undo / Redo labels are produced by `egui::Context::format_shortcut` for `Cmd+Z` and `Shift+Cmd+Z` (`Modifiers::COMMAND`, `Modifiers::COMMAND | Modifiers::SHIFT`), so macOS shows ⌘Z / ⇧⌘Z and other platforms show Ctrl+Z / Shift+Ctrl+Z.
 
@@ -87,7 +92,7 @@ Lists every item in every menu, prefixed by its menu name:
 - A2 — `F1` and `?` each toggle the help window.
 - A3 — With help open, `Escape` closes it and does not cancel a polygon / edit mode; with help closed, `Escape` behaves as before.
 - A4 — The window is closable, draggable and non-modal; arrow-key scrolling and canvas clicks keep working while it is open.
-- A5 — Keyboard section lists every key the editor handles — Arrow keys, Enter, Escape, Delete/Backspace, Undo, Redo, F1 / ?, F5, R and the play-mode movement keys — and nothing the editor does not handle.
+- A5 — Keyboard section lists every key the editor handles — Arrow keys, Enter, Escape, Delete/Backspace, Undo, Redo, F1 / ?, F5, R, the play-mode movement keys and the combat keys `J`/`X`, `L` and `F2` — and nothing the editor does not handle.
 - A6 — Undo/Redo labels come from `format_shortcut` (⌘ on macOS, Ctrl elsewhere).
 - A7 — Mouse section covers left click per tool, both double-click meanings, right-click, entity / vertex / toolbox drag, and click-outside-to-exit-edit.
 - A8 — Tools section lists every `toolboxes.json` tool exactly once with description and kind; `add_point_tool` / `remove_point_tool` flagged "not yet implemented"; `select_tool` / `delete_tool` not flagged.

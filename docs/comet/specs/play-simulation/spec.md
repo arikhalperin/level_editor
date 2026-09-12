@@ -1,5 +1,7 @@
 # Play simulation
 
+> Amended 2026-09-12 by the play-combat-simulation change: bitmap entities are no longer inert (`orc_tool`, `coin_tool` and `death_trap_tool` gain behaviour, specified in the `play-combat` capability), the input list gained the attack, shield and debug keys, `R` restarts the whole run rather than only respawning, and the overlay gained health, score, coins and shield. Movement, the spawn point, the fixed timestep and the non-destructive guarantee are unchanged.
+
 Complete target behaviour of the editor's in-editor play mode after this change is archived.
 
 ## Purpose and fidelity
@@ -8,7 +10,7 @@ Play mode drops a controllable character into the level currently being edited s
 
 ## Entering and leaving
 
-A `Play` menu carries a `Play / Stop` item, and `F5` is its shortcut; either toggles play mode. Entering spawns the character; leaving removes it and returns the editor to the tool, selection and input handling it had before. `R` respawns the character at the spawn point. Toggles are ignored while a text field wants keyboard input.
+A `Play` menu carries a `Play / Stop` item, and `F5` is its shortcut; either toggles play mode. Entering spawns the character; leaving removes it and returns the editor to the tool, selection and input handling it had before. `R` restarts the run: the character returns to the spawn point and, per the `play-combat` capability, every orc and coin is restored. Toggles are ignored while a text field wants keyboard input.
 
 The spawn point is the last canvas click position in world coordinates, or (100, 100) when nothing has been clicked. A left click during play moves the spawn point and respawns there rather than acting on the level.
 
@@ -18,7 +20,7 @@ Play mode never modifies the level. While playing, entity placement, selection, 
 
 ## Collision geometry
 
-Collision is taken from the level's polygon entities, mirroring `world_objects::spawn_polygon_collider` in the game: every polygon entity is solid, and a polygon whose type is `wall_tool` is additionally climbable. The game builds each polygon as a `Collider::convex_hull`, so a concave polygon drawn in the editor collides as its convex hull here too. Bitmap entities are not solid — the game gives them their own behaviour (orcs, coins, death pits), which is out of scope.
+Collision is taken from the level's polygon entities, mirroring `world_objects::spawn_polygon_collider` in the game: every polygon entity is solid, and a polygon whose type is `wall_tool` is additionally climbable. The game builds each polygon as a `Collider::convex_hull`, so a concave polygon drawn in the editor collides as its convex hull here too. Bitmap entities are not solid. They are not inert either: the `play-combat` capability turns `orc_tool`, `coin_tool` and `death_trap_tool` into orcs, coins and death pits. Every other bitmap stays decorative.
 
 The character is a capsule with `PLAYER_CAPSULE_HALF_HEIGHT` 20 and `PLAYER_CAPSULE_RADIUS` 25, drawn as a plain shape with no sprite or animation. It never tunnels through a polygon, including at maximum fall speed.
 
@@ -43,7 +45,7 @@ All values below are the game's constants.
 
 ## Input
 
-Bindings match the game's `PlayerBindings` defaults: move left `A` or `←`, move right `D` or `→`, look up `W` or `↑`, look down `S` or `↓`, jump `Space` or `Z`, dash `Shift`, `K` or `C`. While play mode is active the arrow keys drive the character and do not scroll the canvas; on Stop they scroll the canvas again.
+Bindings match the game's `PlayerBindings` defaults: move left `A` or `←`, move right `D` or `→`, look up `W` or `↑`, look down `S` or `↓`, jump `Space` or `Z`, dash `Shift`, `K` or `C`, attack `J` or `X`, shield `L`. `F2` toggles the combat debug view. Attack and shield belong to the `play-combat` capability. While play mode is active the arrow keys drive the character and do not scroll the canvas; on Stop they scroll the canvas again.
 
 ## Camera
 
@@ -55,7 +57,7 @@ The simulation advances on a fixed timestep of 1/120 s driven by an accumulator,
 
 ## Presentation
 
-A small overlay shows the character's world position, whether it is grounded, and the current state — run, air, dash, wall slide or climb.
+A small overlay shows the character's world position, whether it is grounded, and the current state — run, air, dash, wall slide or climb — followed by the health, score, coins, orcs and shield readings the `play-combat` capability adds.
 
 ## Structure
 

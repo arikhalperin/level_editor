@@ -23,7 +23,10 @@ mod game_config;
 mod level_size;
 
 mod sim;
-use sim::{CollisionPoly, Simulation, World};
+use sim::{CollisionPoly, World};
+
+mod combat;
+use combat::{BitmapSpawn, PlayInput, PlaySession};
 
 mod entities;
 use entities::{Entity, DrawableEntity};
@@ -98,12 +101,14 @@ struct EditorState {
     /// Open state and in-progress text of the Level Size dialog.
     size_dialog: Option<(String, String)>,
     /// The running play simulation. `None` means the editor is not in play mode.
-    play: Option<Simulation>,
+    play: Option<PlaySession>,
     /// Where the character spawns: the last canvas click in world space, remembered
     /// across play sessions so a cleared `last_click_pos` falls back to it.
     play_spawn: Option<Pos2>,
     /// Tool and tool name to restore when play mode ends.
     tool_before_play: Option<(Tool, Option<String>)>,
+    /// Whether the combat debug view (slash hitbox, orc ranges) is drawn. Off by default.
+    combat_debug: bool,
 }
 
 impl Default for EditorState {
@@ -157,6 +162,7 @@ impl Default for EditorState {
             play: None,
             play_spawn: None,
             tool_before_play: None,
+            combat_debug: false,
         };
         
         trace!("init_state_done");
@@ -593,6 +599,20 @@ impl EditorState {
         World { polys }
     }
 
+    /// The level's bitmap entities in the plain form the combat layer maps to orcs,
+    /// coins and death pits.
+    fn bitmap_spawns(&self) -> Vec<BitmapSpawn> {
+        self.entities
+            .iter()
+            .filter_map(|e| e.as_bitmap())
+            .map(|b| BitmapSpawn {
+                name: b.bitmap_name.clone(),
+                pos: b.pos,
+                size: b.get_size(),
+            })
+            .collect()
+    }
+
     fn start_play(&mut self) {
         // Spawn where the level was last clicked, in world coordinates; if the last
         // gesture cleared that (finishing a polygon does), reuse the previous spawn.
@@ -607,7 +627,7 @@ impl EditorState {
         self.dragging_polygon_point = false;
         self.dragging_toolbox = false;
         self.drag_start = None;
-        self.play = Some(Simulation::new(spawn));
+        self.play = Some(PlaySession::new(spawn, &self.bitmap_spawns()));
         trace!("play_started spawn={:?}", spawn);
     }
 
@@ -629,23 +649,31 @@ impl EditorState {
     }
 
     /// Read the character's buttons, using the game's default bindings.
-    fn play_input(ctx: &egui::Context) -> sim::Input {
+    fn play_input(ctx: &egui::Context) -> PlayInput {
         if ctx.wants_keyboard_input() {
-            return sim::Input::default();
+            return PlayInput::default();
         }
-        ctx.input(|i| sim::Input {
+        let sim = ctx.input(|i| sim::Input {
             left: i.key_down(egui::Key::A) || i.key_down(egui::Key::ArrowLeft),
             right: i.key_down(egui::Key::D) || i.key_down(egui::Key::ArrowRight),
             up: i.key_down(egui::Key::W) || i.key_down(egui::Key::ArrowUp),
             down: i.key_down(egui::Key::S) || i.key_down(egui::Key::ArrowDown),
             jump: i.key_down(egui::Key::Space) || i.key_down(egui::Key::Z),
             dash: i.modifiers.shift || i.key_down(egui::Key::K) || i.key_down(egui::Key::C),
+        });
+        // Attack and shield use the game's own bindings; left-click stays the editor's
+        // spawn-placement gesture, so it never attacks.
+        ctx.input(|i| PlayInput {
+            sim,
+            attack: i.key_down(egui::Key::J) || i.key_down(egui::Key::X),
+            shield: i.key_down(egui::Key::L),
         })
     }
 
     /// Follow the character with the canvas, using the game's camera constants.
     fn follow_with_camera(&mut self, viewport: egui::Rect, dt: f32) {
         let Some(play) = &self.play else { return };
+        let play = &play.player;
         let target_x = play.pos.x - viewport.width() * 0.5;
         // Game: goal_y = player.y + CAMERA_OFFSET_Y in a Y-up world, i.e. the camera aims
         // above the player so the player sits below screen centre. In Y-down that is a
@@ -670,7 +698,8 @@ impl EditorState {
 
     /// Draw the character capsule and the status overlay.
     fn draw_play(&self, painter: &egui::Painter, offset: Vec2) {
-        let Some(play) = &self.play else { return };
+        let Some(session) = &self.play else { return };
+        let play = &session.player;
         let c = play.pos - offset;
         let r = game_config::PLAYER_CAPSULE_RADIUS;
         let hh = game_config::PLAYER_CAPSULE_HALF_HEIGHT;
@@ -692,6 +721,98 @@ impl EditorState {
             [egui::pos2(c.x, c.y), egui::pos2(c.x + play.facing * r, c.y)],
             egui::Stroke::new(3.0_f32, Color32::BLACK),
         );
+
+        let combat = &session.combat;
+
+        // Death pits, then coins, then orcs: hazards behind pickups behind bodies.
+        for pit in &combat.pits {
+            painter.rect_filled(
+                pit.rect.translate(-offset),
+                0.0,
+                Color32::from_rgba_unmultiplied(160, 40, 40, 90),
+            );
+        }
+        for coin in &combat.coins {
+            if coin.collected {
+                continue;
+            }
+            let r = coin.rect.translate(-offset);
+            painter.circle_filled(r.center(), r.width().min(r.height()) * 0.5, Color32::from_rgb(235, 190, 60));
+        }
+        for orc in &combat.orcs {
+            if !orc.alive {
+                continue;
+            }
+            let body = orc.aabb().translate(-offset);
+            let tint = if orc.club_active() {
+                // The game tints the orc while the club can bite; the same warning here.
+                Color32::from_rgb(210, 70, 70)
+            } else {
+                Color32::from_rgb(110, 160, 100)
+            };
+            painter.rect_filled(body, 4.0, tint);
+            painter.rect_stroke(body, 4.0, egui::Stroke::new(2.0_f32, Color32::BLACK));
+            // Power bar above the orc.
+            let bar = egui::Rect::from_min_size(
+                egui::pos2(body.left(), body.top() - 10.0),
+                egui::vec2(body.width(), 5.0),
+            );
+            painter.rect_filled(bar, 0.0, Color32::from_gray(70));
+            painter.rect_filled(
+                egui::Rect::from_min_size(bar.min, egui::vec2(bar.width() * orc.power_fraction(), bar.height())),
+                0.0,
+                Color32::from_rgb(220, 90, 90),
+            );
+        }
+
+        if self.combat_debug {
+            self.draw_combat_debug(painter, offset);
+        }
+    }
+
+    /// F2 view: what can hit what. Drawn only on request.
+    fn draw_combat_debug(&self, painter: &egui::Painter, offset: Vec2) {
+        let Some(session) = &self.play else { return };
+        let combat = &session.combat;
+
+        if let Some(slash) = &combat.attack.slash {
+            let box_ = slash.direction.hitbox(session.player.pos, slash.facing).translate(-offset);
+            let colour = if slash.is_live() {
+                Color32::from_rgb(255, 200, 40)
+            } else {
+                Color32::from_gray(150)
+            };
+            painter.rect_stroke(box_, 0.0, egui::Stroke::new(2.0_f32, colour));
+        }
+
+        for orc in &combat.orcs {
+            if !orc.alive {
+                continue;
+            }
+            let c = orc.pos - offset;
+            painter.circle_stroke(
+                c,
+                game_config::ORC_ATTACK_RANGE_PX,
+                egui::Stroke::new(1.0_f32, Color32::from_rgb(120, 120, 220)),
+            );
+            if orc.club_active() {
+                let danger = egui::Rect::from_center_size(
+                    c,
+                    egui::vec2(
+                        game_config::ORC_CLUB_HIT_MAX_SEPARATION_X_PX * 2.0,
+                        game_config::ORC_CLUB_HIT_MAX_SEPARATION_Y_PX * 2.0,
+                    ),
+                );
+                painter.rect_stroke(danger, 0.0, egui::Stroke::new(2.0_f32, Color32::from_rgb(230, 60, 60)));
+            }
+            painter.text(
+                egui::pos2(c.x, c.y - 24.0),
+                egui::Align2::CENTER_BOTTOM,
+                orc.state.label(),
+                egui::FontId::monospace(11.0),
+                Color32::BLACK,
+            );
+        }
     }
 
     /// Modal Level Size dialog. Applies only a valid size.
@@ -1117,9 +1238,13 @@ impl eframe::App for EditorState {
             if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
                 self.toggle_play();
             }
+            if ctx.input(|i| i.key_pressed(egui::Key::F2)) {
+                self.combat_debug = !self.combat_debug;
+                trace!("combat_debug_toggled on={}", self.combat_debug);
+            }
             if self.play.is_some() && ctx.input(|i| i.key_pressed(egui::Key::R)) {
                 if let Some(play) = &mut self.play {
-                    play.respawn();
+                    play.restart();
                     trace!("play_respawned");
                 }
             }
@@ -1721,13 +1846,36 @@ impl eframe::App for EditorState {
             }
 
             self.draw_play(painter, self.scroll_offset);
-            if let Some(play) = &self.play {
+            if let Some(session) = &self.play {
+                let play = &session.player;
+                let c = &session.combat;
+                // Each shield state must read differently: a bare duration cannot say
+                // whether it is protecting or locked out.
+                let shield = if c.shield.is_active() {
+                    format!("shield UP {:.1}s", c.shield.active_left())
+                } else if c.shield.is_ready() {
+                    "shield ready".to_string()
+                } else {
+                    format!("shield cooling {:.1}s", c.shield.cooldown_left())
+                };
                 let text = format!(
-                    "PLAY  pos ({:.0}, {:.0})  {}  {}   [F5 stop] [R respawn] [click sets spawn]",
+                    concat!(
+                        "PLAY  pos ({:.0}, {:.0})  {}  {}\n",
+                        "health {}/{}  score {}  coins {}/{}  orcs {}/{}  {}\n",
+                        "[F5 stop] [R restart] [J/X attack] [L shield] [F2 debug] [click sets spawn]",
+                    ),
                     play.pos.x,
                     play.pos.y,
                     if play.grounded { "grounded" } else { "airborne" },
                     play.state.label(),
+                    c.health.max(0),
+                    game_config::INITIAL_HEALTH,
+                    c.score,
+                    c.coins_collected(),
+                    c.coins.len(),
+                    c.orcs_alive(),
+                    c.orcs.len(),
+                    shield,
                 );
                 let panel = ui.clip_rect();
                 painter.text(

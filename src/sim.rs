@@ -169,6 +169,13 @@ pub struct Simulation {
     /// Horizontal velocity is held (not decelerated) for the arc of a wall jump when the
     /// player gives no horizontal input, so the jump carries its nominal distance.
     wall_jump_carry: bool,
+    /// While positive, every button is ignored: the hurt lockout after a club hit.
+    /// Gravity and collision keep running, so the character still falls and lands.
+    control_lock_left: f32,
+    /// This rise is a bounce (a pogo or a knockback pop), not a held jump, so the
+    /// release-shorten gravity must never apply to it — otherwise it is cancelled on
+    /// the very next step. The faster post-apex fall still applies, as in the game.
+    bounce: bool,
 }
 
 impl Simulation {
@@ -198,6 +205,8 @@ impl Simulation {
             wall_climbable: false,
             input_lock_left: 0.0,
             wall_jump_carry: false,
+            control_lock_left: 0.0,
+            bounce: false,
         }
     }
 
@@ -219,7 +228,72 @@ impl Simulation {
         (2.0 * cfg::GRAVITY * height).sqrt()
     }
 
+    /// Ignore every button for `secs`, as the game's hurt lockout does. Gravity and
+    /// collision continue, so the character still falls, lands and is carried by any
+    /// knockback already applied.
+    pub fn lock_control(&mut self, secs: f32) {
+        self.control_lock_left = self.control_lock_left.max(secs);
+    }
+
+    pub fn is_control_locked(&self) -> bool {
+        self.control_lock_left > 0.0
+    }
+
+    /// True while a knockback or wall jump is holding the velocity against input.
+    pub fn is_input_locked(&self) -> bool {
+        self.input_lock_left > 0.0
+    }
+
+    /// Set the velocity outright and hold it against horizontal input for `hold` seconds:
+    /// sword recoil and club knockback.
+    pub fn apply_knockback(&mut self, vel: Vec2, hold: f32) {
+        self.vel = vel;
+        self.input_lock_left = self.input_lock_left.max(hold);
+        self.wall_jump_carry = true;
+        self.dash_left = 0.0;
+        if vel.y < 0.0 {
+            self.in_jump = true;
+            self.bounce = true;
+        }
+    }
+
+    /// Bounce off a down-slash hit: rise `height` px and get the air dash back, as the
+    /// game's pogo does.
+    pub fn pogo(&mut self, height: f32) {
+        self.vel.y = -Self::jump_speed(height);
+        self.air_dashes_used = 0;
+        // A pogo is a fixed bounce, not a held jump: without `bounce` the
+        // release-shorten gravity would cancel the rise on the very next step. Keeping
+        // `in_jump` set preserves the game's faster post-apex descent.
+        self.in_jump = true;
+        self.bounce = true;
+    }
+
+    pub fn is_dashing(&self) -> bool {
+        self.dash_left > 0.0
+    }
+
+    pub fn is_climbing(&self) -> bool {
+        self.state == State::Climbing
+    }
+
+    /// Axis-aligned bounds of the capsule, for overlap tests against boxes.
+    pub fn aabb(&self) -> egui::Rect {
+        egui::Rect::from_center_size(
+            self.pos,
+            Vec2::new(
+                cfg::PLAYER_CAPSULE_RADIUS * 2.0,
+                cfg::PLAYER_CAPSULE_HALF_EXTENT_Y * 2.0,
+            ),
+        )
+    }
+
     /// Advance real time, running whole fixed steps. Returns the number of steps taken.
+    ///
+    /// Movement only. The editor drives [`crate::combat::PlaySession::advance`] instead,
+    /// which runs movement and combat on one accumulator; this entry point is kept as the
+    /// movement-only contract the canvas-scrolling / play-simulation specs are stated in.
+    #[allow(dead_code)]
     pub fn advance(&mut self, world: &World, input: Input, dt: f32) -> u32 {
         if !dt.is_finite() || dt <= 0.0 {
             return 0;
@@ -239,6 +313,10 @@ impl Simulation {
 
     /// One fixed step. Public so tests can drive an exact number of them.
     pub fn step(&mut self, world: &World, input: Input, dt: f32) {
+        // The hurt lockout suppresses input without pausing physics.
+        self.control_lock_left = (self.control_lock_left - dt).max(0.0);
+        let input = if self.control_lock_left > 0.0 { Input::default() } else { input };
+
         self.tick_timers(dt, input);
 
         if self.dash_left > 0.0 {
@@ -378,6 +456,7 @@ impl Simulation {
                 -vy,
             );
             self.facing = -wall_dir;
+            self.bounce = false;
             self.input_lock_left = cfg::WALL_JUMP_INPUT_LOCK;
             self.wall_jump_carry = true;
             self.jump_buffer_left = 0.0;
@@ -389,6 +468,7 @@ impl Simulation {
         }
         if self.grounded || self.coyote_left > 0.0 {
             self.vel.y = -Self::jump_speed(cfg::JUMP_HEIGHT);
+            self.bounce = false;
             self.jump_buffer_left = 0.0;
             self.coyote_left = 0.0;
             self.grounded = false;
@@ -406,7 +486,7 @@ impl Simulation {
         let mut g = cfg::GRAVITY;
         if self.in_jump {
             if rising {
-                if !self.jump_held_since_takeoff {
+                if !self.jump_held_since_takeoff && !self.bounce {
                     g += cfg::JUMP_SHORTEN_EXTRA_GRAVITY;
                 }
             } else {
@@ -499,6 +579,7 @@ impl Simulation {
             self.coyote_left = cfg::COYOTE_TIME;
             self.air_dashes_used = 0;
             self.in_jump = false;
+            self.bounce = false;
             self.wall_jump_carry = false;
         } else if was_grounded {
             self.coyote_left = cfg::COYOTE_TIME; // Just walked off a ledge.
