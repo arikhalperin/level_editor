@@ -15,6 +15,9 @@ use background::BackgroundImageController;
 mod scroll;
 use scroll::{HeldDirs, ScrollModel};
 
+mod help;
+use help::{escape_action, escape_closes_help, EscapeAction, HelpContent};
+
 mod entities;
 use entities::{Entity, DrawableEntity};
 
@@ -69,6 +72,12 @@ struct EditorState {
     last_background_path: Option<std::path::PathBuf>,
     last_level_path: Option<std::path::PathBuf>,
     initial_load_done: bool,
+    /// Whether the Keyboard & Commands window is showing. View state only: never
+    /// serialised and never part of `has_unsaved_changes`.
+    help_open: bool,
+    /// Screen rect of the help window while it is open, so clicks inside it are
+    /// consumed by the window instead of falling through to the canvas.
+    help_rect: Option<egui::Rect>,
 }
 
 impl Default for EditorState {
@@ -112,6 +121,8 @@ impl Default for EditorState {
             last_background_path: None,
             last_level_path: None,
             initial_load_done: false,
+            help_open: false,
+            help_rect: None,
         };
         
         trace!("init_state_done");
@@ -465,6 +476,73 @@ impl EditorState {
 
         Ok(())
     }
+
+    /// Draw the Keyboard & Commands window. Non-modal: the canvas, toolbox and every
+    /// shortcut keep working while it is open.
+    fn render_help_window(&mut self, ctx: &egui::Context) {
+        if !self.help_open {
+            self.help_rect = None;
+            return;
+        }
+
+        let undo = ctx.format_shortcut(&egui::KeyboardShortcut::new(
+            egui::Modifiers::COMMAND,
+            egui::Key::Z,
+        ));
+        let redo = ctx.format_shortcut(&egui::KeyboardShortcut::new(
+            egui::Modifiers::COMMAND | egui::Modifiers::SHIFT,
+            egui::Key::Z,
+        ));
+        let content = HelpContent::build(
+            self.toolbox_layout.as_ref().map(|l| l.tools.as_slice()),
+            &undo,
+            &redo,
+        );
+
+        // Keep the whole window on screen at the 800x720 minimum size.
+        let max_body = (ctx.screen_rect().height() * 0.7).max(240.0);
+        let mut open = true;
+        let response = egui::Window::new("Keyboard & Commands")
+            .open(&mut open)
+            .resizable(true)
+            .collapsible(false)
+            .default_width(560.0)
+            .show(ctx, |ui| {
+                egui::ScrollArea::vertical()
+                    .max_height(max_body)
+                    .show(ui, |ui| {
+                        let sections = [
+                            ("Keyboard", &content.keyboard),
+                            ("Mouse", &content.mouse),
+                            ("Tools", &content.tools),
+                            ("File menu", &content.file),
+                        ];
+                        for (title, entries) in sections {
+                            ui.heading(title);
+                            egui::Grid::new(format!("help_grid_{}", title))
+                                .num_columns(2)
+                                .striped(true)
+                                .spacing([16.0, 4.0])
+                                .show(ui, |ui| {
+                                    for entry in entries {
+                                        ui.label(egui::RichText::new(&entry.label).strong());
+                                        ui.label(&entry.effect);
+                                        ui.end_row();
+                                    }
+                                });
+                            ui.add_space(8.0);
+                        }
+                    });
+            });
+
+        self.help_rect = response.map(|r| r.response.rect);
+
+        if !open {
+            self.help_open = false;
+            self.help_rect = None;
+            trace!("help_closed_by_button");
+        }
+    }
 }
 
 /// Draw a bottom-right minimap: full-level thumbnail when a background is loaded, and a rectangle for the visible area.
@@ -597,6 +675,7 @@ fn render_level_minimap(
         screen,
         pixels_per_point,
     ));
+
 }
 
 impl eframe::App for EditorState {
@@ -655,8 +734,17 @@ impl eframe::App for EditorState {
                         }
                     }
                 });
+                ui.menu_button("Help", |ui| {
+                    if ui.button("Keyboard & Commands").clicked() {
+                        ui.close_menu();
+                        self.help_open = true;
+                        trace!("menu_help_clicked");
+                    }
+                });
             });
         });
+
+        self.render_help_window(ctx);
         
         // Handle exit with unsaved changes prompt
         if self.exit_requested {
@@ -701,6 +789,16 @@ impl eframe::App for EditorState {
                 down: i.key_down(egui::Key::ArrowDown),
             })
         };
+        if !ctx.wants_keyboard_input() {
+            let toggle_help = ctx.input(|i| {
+                i.key_pressed(egui::Key::F1) || i.key_pressed(egui::Key::Questionmark)
+            });
+            if toggle_help {
+                self.help_open = !self.help_open;
+                trace!("help_toggled open={}", self.help_open);
+            }
+        }
+
         self.scroll.step(held, dt);
         self.scroll_offset = self.scroll.pixel_offset();
         if self.scroll.needs_repaint(held) {
@@ -745,15 +843,34 @@ impl eframe::App for EditorState {
             
             // Cancel polygon or exit polygon edit mode with Escape key
             if i.key_pressed(egui::Key::Escape) {
-                if self.drawing_polygon.is_some() {
-                    self.drawing_polygon = None;
-                    trace!("polygon_cancelled");
-                } else if self.editing_polygon_entity.is_some() {
-                    self.editing_polygon_entity = None;
-                    self.editing_polygon_point = None;
-                    self.dragging_polygon_point = false;
-                    self.selected_entity = None;
-                    trace!("polygon_edit_mode_cancelled");
+                // Closing the help always wins, so a stray Escape can never also
+                // discard a half-drawn polygon.
+                let action = if escape_closes_help(self.help_open) {
+                    EscapeAction::CloseHelp
+                } else {
+                    escape_action(
+                        self.help_open,
+                        self.drawing_polygon.is_some(),
+                        self.editing_polygon_entity.is_some(),
+                    )
+                };
+                match action {
+                    EscapeAction::CloseHelp => {
+                        self.help_open = false;
+                        trace!("help_closed_by_escape");
+                    }
+                    EscapeAction::CancelPolygon => {
+                        self.drawing_polygon = None;
+                        trace!("polygon_cancelled");
+                    }
+                    EscapeAction::ExitEditMode => {
+                        self.editing_polygon_entity = None;
+                        self.editing_polygon_point = None;
+                        self.dragging_polygon_point = false;
+                        self.selected_entity = None;
+                        trace!("polygon_edit_mode_cancelled");
+                    }
+                    EscapeAction::Nothing => {}
                 }
             }
             
@@ -800,13 +917,20 @@ impl eframe::App for EditorState {
         trace!("update_toolbox_end tool_selected={:?}", tool_selected);
         
         trace!("update_handle_toolbox_drag_start");
+        // A press inside the help window belongs to the window, not the toolbox. This
+        // only blocks *starting* a drag: one already under way keeps tracking the
+        // cursor across the window, so the toolbox never jumps.
+        let pointer_over_help = matches!(
+            (self.help_rect, pointer_pos),
+            (Some(rect), Some(pos)) if rect.contains(pos)
+        );
         // Drag logic for toolbox
         if pointer_pressed && self.toolbox_layout.is_some() {
             let layout = self.toolbox_layout.as_ref().unwrap();
             let toolbox_rect = get_toolbox_rect(layout, self.toolbox_pos);
             
             if let Some(pos) = pointer_pos {
-                if toolbox_rect.contains(pos) {
+                if toolbox_rect.contains(pos) && !pointer_over_help {
                     if !self.dragging_toolbox {
                         self.dragging_toolbox = true;
                         self.drag_start = pointer_pos;
@@ -1025,8 +1149,11 @@ impl eframe::App for EditorState {
                     } else {
                         false
                     };
+                    // Clicks inside the help window are consumed by the window, so they
+                    // never place, select or delete anything on the canvas behind it.
+                    let help_click = self.help_rect.map_or(false, |rect| rect.contains(pos));
                     
-                    if !toolbox_click {
+                    if !toolbox_click && !help_click {
                         // Adjust position for scroll offset
                         let world_pos = pos + self.scroll_offset;
                         
@@ -1210,7 +1337,11 @@ impl eframe::App for EditorState {
             }
             
             // Right-click to finalize current polygon
-            if secondary_clicked && self.tool == Tool::DrawPolygon {
+            let secondary_over_help = matches!(
+                (self.help_rect, pointer_pos),
+                (Some(rect), Some(pos)) if rect.contains(pos)
+            );
+            if secondary_clicked && self.tool == Tool::DrawPolygon && !secondary_over_help {
                 if let Some(points) = self.drawing_polygon.take() {
                     if points.len() >= 3 {
                         self.save_state();

@@ -1,0 +1,1043 @@
+schema: comet.native.v4
+name: editor-help-screen
+language: en
+phase: archive
+status: done
+state_version: 14
+brief: brief.md
+spec_changes:
+  - capability: editor-help-screen
+    operation: create
+    source: specs/editor-help-screen/spec.md
+workspace:
+  isolation: current
+  change_branch: main
+  target_branch: main
+  finish: null
+loop:
+  stage: done
+  goal_cycle: 1
+  iteration: 3
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 1
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: null
+acceptance:
+  - id: A1
+    source: brief.md
+    text: "A1 — Help menu: the menu bar shows `Help`; choosing `Help → Keyboard &
+      Commands` opens the help window."
+    result: passed
+    reason:
+      text: src/main.rs:729-735 adds ui.menu_button("Help", ...) in the same
+        egui::menu::bar as File, with a single ui.button("Keyboard & Commands")
+        that sets self.help_open = true and calls ui.close_menu();
+        render_help_window (main.rs:739, 478-481) draws the window whenever
+        help_open.
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: "A2 — Key toggle: pressing `F1` opens the help window when closed and
+      closes it when open; pressing `?` does the same."
+    result: passed
+    reason:
+      text: src/main.rs:785-791 reads i.key_pressed(egui::Key::F1) ||
+        i.key_pressed(egui::Key::Questionmark) and does self.help_open =
+        !self.help_open, so either key opens when closed and closes when open.
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: "A3 — Escape priority: with the help window open and a polygon in progress
+      (or a polygon in edit mode), one press of `Escape` closes the help window
+      and the polygon / edit mode is untouched; with the help window closed,
+      `Escape` cancels the polygon / exits edit mode exactly as before."
+    result: passed
+    reason:
+      text: main.rs:837-861 routes Escape through escape_action(help_open,
+        drawing_polygon.is_some(), editing_polygon_entity.is_some()); the
+        CloseHelp arm only clears help_open and touches no polygon state, and it
+        is the sole Escape handler in the codebase. With help closed the
+        CancelPolygon/ExitEditMode arms are byte-identical to the pre-change
+        branches. help.rs tests both directions; both passed in the Runtime
+        cargo test.
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: "A4 — Non-modal window: the help window has a title-bar close button, can
+      be dragged, and while it is open the arrow keys still scroll the canvas
+      and clicks outside the window still reach the canvas and toolbox."
+    result: passed
+    reason:
+      text: main.rs:500-504 uses egui::Window::new(...).open(&mut open) (title-bar
+        close button; main.rs:533-536 syncs it back) and does not call
+        .movable(false), so it is draggable. Arrow scrolling (main.rs:773-803)
+        and all canvas/toolbox handling run every frame regardless of help_open,
+        and no modal/Area-order/input-capture mechanism was added.
+      truncated: false
+  - id: A5
+    source: brief.md
+    text: "A5 — Keyboard section completeness: the Keyboard section lists entries
+      for Arrow keys, Enter, Escape, Delete/Backspace, Undo, Redo, and F1 / ? —
+      every key the input handler responds to — and nothing that the editor does
+      not handle."
+    result: passed
+    reason:
+      text: Every key the handler touches is arrows (main.rs:778-781), F1/Questionmark
+        (786), Enter (810), Z+command/+shift (826-827), Escape (837),
+        Delete/Backspace (865) - exactly the 7 rows built in help.rs:88-102,
+        asserted by the exact-equality test
+        keyboard_section_lists_every_handled_key_and_nothing_else, which passed.
+      truncated: false
+  - id: A6
+    source: brief.md
+    text: 'A6 — Platform modifiers: on macOS the Undo entry reads with ⌘ (e.g. "⌘Z")
+      and Redo with ⇧⌘Z; on other platforms they read "Ctrl+Z" / "Shift+Ctrl+Z".
+      Rendered via `egui::Context::format_shortcut`, not hard-coded strings.'
+    result: passed
+    reason:
+      text: main.rs:483-490 builds both labels with
+        ctx.format_shortcut(&KeyboardShortcut::new(Modifiers::COMMAND, Key::Z))
+        and COMMAND|SHIFT; help.rs takes them as parameters and hard-codes no
+        glyph (test undo_and_redo_labels_come_from_the_caller asserts no mac
+        glyph when the caller passes Ctrl strings). egui 0.27.2
+        context.rs:1292-1321 picks ModifierNames::SYMBOLS on mac and NAMES
+        elsewhere.
+      truncated: false
+  - id: A7
+    source: brief.md
+    text: "A7 — Mouse section completeness: the Mouse section covers left click per
+      tool (Select, Delete, polygon tools, bitmap tools), double-click (close
+      polygon; enter vertex edit), right-click (finish polygon), drag (entity,
+      vertex, toolbox), and click-outside-to-exit-edit."
+    result: passed
+    reason:
+      text: "help.rs:104-130 has all ten rows: Select/Delete/polygon/bitmap left
+        click, both double-click meanings, right-click, drag in edit mode,
+        click-outside-to-exit, drag the toolbox; entity drag is stated in the
+        Select-tool row. Test mouse_section_covers_every_gesture passed."
+      truncated: false
+  - id: A8
+    source: brief.md
+    text: 'A8 — Tools generated from JSON: every tool in `src/toolboxes.json`
+      appears exactly once with its description and kind; `add_point_tool` and
+      `remove_point_tool` carry a "not yet implemented" marker; `select_tool`
+      and `delete_tool` do not. Adding a tool to the JSON makes it appear
+      without a code change.'
+    result: passed
+    reason:
+      text: help.rs:132-145 maps over the runtime-loaded ToolboxLayout.tools
+        (main.rs:491-495 passes self.toolbox_layout), so a new JSON tool appears
+        with no code change; is_tool_implemented (help.rs:71-73) flags only
+        tool-kind names other than select_tool/delete_tool. Test
+        real_toolboxes_json_yields_every_tool_exactly_once parses the real
+        src/toolboxes.json and asserts one entry per tool, description present,
+        and flagged == [Add point, Remove point]; it passed.
+      truncated: false
+  - id: A9
+    source: brief.md
+    text: A9 — File menu section lists Background Image, Load Level, Save Level, and
+      Exit, noting that Exit prompts when there are unsaved changes.
+    result: passed
+    reason:
+      text: help.rs:147-152 lists Background Image, Load Level, Save Level, Exit with
+        'Quit; asks whether to save first when there are unsaved changes.';
+        matches main.rs:694-727 (Exit sets exit_requested when
+        has_unsaved_changes()).
+      truncated: false
+  - id: A10
+    source: brief.md
+    text: "A10 — Fits the window: the help content is inside a vertical `ScrollArea`
+      with a bounded max height so at 800×720 the window is fully on screen and
+      its content can be scrolled to the end."
+    result: passed
+    reason:
+      text: main.rs:498 let max_body = (ctx.screen_rect().height() * 0.7).max(240.0);
+        feeds egui::ScrollArea::vertical().max_height(max_body)
+        (main.rs:506-508). At the 800x720 minimum (main.rs:1370) that is 504pt
+        of body plus title bar/frame, and default_width(560.0) < 800, so the
+        window fits and long content scrolls.
+      truncated: false
+  - id: A11
+    source: brief.md
+    text: "A11 — View state only: opening/closing help never changes
+      `has_unsaved_changes()` and nothing about help is serialised into
+      `LevelData`."
+    result: passed
+    reason:
+      text: has_unsaved_changes (main.rs:213-215) compares only
+        compute_entities_hash() against last_save_hash; LevelData
+        (src/level_data.rs:6-15) has no help field and save_level
+        (main.rs:391-400) writes only
+        version/background/background_size/entities. help_open is a plain bool
+        initialised false and never persisted to the config file.
+      truncated: false
+  - id: A12
+    source: specs/editor-help-screen/spec.md
+    text: Complete target behaviour of the in-app help screen after this change is
+      archived.
+    result: passed
+    reason:
+      text: Preamble line. The delivered change covers the whole spec surface; the
+        only mismatches found are A18 and A50 below.
+      truncated: false
+  - id: A13
+    source: specs/editor-help-screen/spec.md
+    text: The menu bar has a `Help` menu to the right of `File`. Its single item,
+      `Keyboard & Commands`, opens the help window (and closes the menu).
+    result: passed
+    reason:
+      text: main.rs:729 places menu_button("Help") immediately after the File
+        menu_button block (693-728) inside the same egui::menu::bar, so it
+        renders to the right of File; its single item sets help_open and calls
+        ui.close_menu().
+      truncated: false
+  - id: A14
+    source: specs/editor-help-screen/spec.md
+    text: "`F1` toggles the help window. `?` (`egui::Key::Questionmark`, i.e.
+      Shift+/) toggles it too. Both toggles are ignored while a text field wants
+      keyboard input (`ctx.wants_keyboard_input()`)."
+    result: passed
+    reason:
+      text: main.rs:784 wraps the whole toggle in if !ctx.wants_keyboard_input(), and
+        786 tests Key::F1 and Key::Questionmark; both keys exist in egui 0.27.2
+        (the Runtime cargo build compiled, exit 0).
+      truncated: false
+  - id: A15
+    source: specs/editor-help-screen/spec.md
+    text: The window's title-bar close button closes it.
+    result: passed
+    reason:
+      text: main.rs:499-501 passes .open(&mut open), which egui renders as a title-bar
+        close button; main.rs:533-536 writes self.help_open = false when the
+        user clicks it.
+      truncated: false
+  - id: A16
+    source: specs/editor-help-screen/spec.md
+    text: "`Escape` has a strict priority order: if the help window is open, one
+      press closes it and that press is fully consumed — it does not cancel a
+      polygon in progress or leave polygon edit mode. If the help window is
+      closed, `Escape` behaves exactly as before (cancel polygon drawing, else
+      exit polygon edit mode)."
+    result: passed
+    reason:
+      text: help.rs:46-56 returns CloseHelp whenever help_open, before the
+        drawing/editing branches; main.rs:845-848 handles that arm by clearing
+        only help_open, and no other code path reacts to Escape, so the press is
+        fully consumed.
+      truncated: false
+  - id: A17
+    source: specs/editor-help-screen/spec.md
+    text: "Help state (`help_open: bool`) is editor view state: it is not saved to
+      the level file, not restored between runs, and does not affect
+      `has_unsaved_changes()`."
+    result: passed
+    reason:
+      text: "help_open: bool is EditorState-only, defaults to false each run, is
+        absent from LevelData/save_level/load_level_from_path and from
+        compute_entities_hash/has_unsaved_changes, and is not written to the
+        config JSON."
+      truncated: false
+  - id: A18
+    source: specs/editor-help-screen/spec.md
+    text: "A floating `egui::Window` titled `Keyboard & Commands`, draggable and
+      resizable, non-modal: while it is open the canvas, toolbox, menus,
+      arrow-key scrolling and every other command keep working; only clicks
+      inside the window are captured by it."
+    result: passed
+    reason:
+      text: "Window is draggable, resizable, non-modal (main.rs:505-509). Capture
+        enforced positively: canvas clicks guarded by help_click (1154-1156),
+        right-click polygon by secondary_over_help (1340-1344), toolbox drag
+        START by pointer_over_help (923-933). Traced every mutation path:
+        dragging_entity and dragging_polygon_point can only be set inside the
+        !toolbox_click && !help_click block, so a press inside the window can
+        neither place/select/delete/finalise nor reach any save_state(), and
+        has_unsaved_changes() is untouched."
+      truncated: false
+  - id: A19
+    source: specs/editor-help-screen/spec.md
+    text: The body is a vertical `ScrollArea` with a bounded maximum height (≈ 70%
+      of the screen height) so the whole window remains on screen at the
+      editor's minimum size of 800×720 and long content is scrolled rather than
+      clipped.
+    result: passed
+    reason:
+      text: main.rs:498 bounds the body at screen_rect().height() * 0.7 (504pt at the
+        720pt minimum) and 506-508 applies it to
+        ScrollArea::vertical().max_height(...), so content scrolls instead of
+        being clipped.
+      truncated: false
+  - id: A20
+    source: specs/editor-help-screen/spec.md
+    text: "Sections appear in this order with a heading each: **Keyboard**,
+      **Mouse**, **Tools**, **File menu**. Each entry is a two-column row: the
+      key / gesture / tool on the left, its effect on the right."
+    result: passed
+    reason:
+      text: main.rs:509-529 iterates the sections array in the order Keyboard, Mouse,
+        Tools, File menu, emitting ui.heading(title) and an
+        egui::Grid::new(...).num_columns(2) whose rows are label (strong) then
+        effect then end_row().
+      truncated: false
+  - id: A21
+    source: specs/editor-help-screen/spec.md
+    text: "Lists every key the input handler responds to, and nothing else:"
+    result: passed
+    reason:
+      text: "Cross-checked every key_pressed/key_down in src against help.rs:88-102:
+        identical set, no extras. The exact-equality unit test locks this in."
+      truncated: false
+  - id: A22
+    source: specs/editor-help-screen/spec.md
+    text: "| Key | Effect |"
+    result: passed
+    reason:
+      text: "Table header row: the Keyboard section is rendered as a two-column
+        key/effect grid (main.rs:517-527) built from content.keyboard, left
+        column the key, right column the effect."
+      truncated: false
+  - id: A23
+    source: specs/editor-help-screen/spec.md
+    text: "| ← → ↑ ↓ | Scroll the canvas. Hold to accelerate; release to glide to a
+      stop. |"
+    result: passed
+    reason:
+      text: help.rs:89 arrows -> 'Scroll the canvas. Hold to accelerate; release to
+        glide to a stop.', matching ScrollModel acceleration and exponential
+        decay (src/scroll.rs:10-18, 62-79) driven by the arrow keys at
+        main.rs:777-782.
+      truncated: false
+  - id: A24
+    source: specs/editor-help-screen/spec.md
+    text: "| Enter | Finish the polygon being drawn (needs ≥ 3 vertices). |"
+    result: passed
+    reason:
+      text: help.rs:90 Enter -> 'Finish the polygon being drawn (needs at least 3
+        vertices).', matching main.rs:810-822 which only pushes the polygon when
+        points.len() >= 3.
+      truncated: false
+  - id: A25
+    source: specs/editor-help-screen/spec.md
+    text: "| Escape | Close this help; otherwise cancel the polygon being drawn or
+      leave polygon edit mode. |"
+    result: passed
+    reason:
+      text: help.rs:91-94 Escape -> 'Close this help; otherwise cancel the polygon
+        being drawn or leave polygon edit mode.', matching the priority
+        implemented at help.rs:46-56 and main.rs:840-861.
+      truncated: false
+  - id: A26
+    source: specs/editor-help-screen/spec.md
+    text: "| Delete / Backspace | Remove the selected vertex of the polygon being
+      edited (a polygon keeps at least 3). |"
+    result: passed
+    reason:
+      text: help.rs:95-98 matches main.rs:865-886, which deletes the selected vertex
+        only when poly.points.len() > 3, i.e. a polygon keeps at least 3.
+      truncated: false
+  - id: A27
+    source: specs/editor-help-screen/spec.md
+    text: "| Undo | Undo the last change. |"
+    result: passed
+    reason:
+      text: help.rs:99 HelpEntry::new(undo_label, "Undo the last change."), where
+        undo_label is the platform label from main.rs:483-486; matches the Cmd+Z
+        handler at main.rs:826-833.
+      truncated: false
+  - id: A28
+    source: specs/editor-help-screen/spec.md
+    text: "| Redo | Redo the last undone change. |"
+    result: passed
+    reason:
+      text: help.rs:100 HelpEntry::new(redo_label, "Redo the last undone change.")
+        with the Shift+Cmd+Z label from main.rs:487-490; matches
+        main.rs:827-829.
+      truncated: false
+  - id: A29
+    source: specs/editor-help-screen/spec.md
+    text: "| F1 / ? | Show or hide this help. |"
+    result: passed
+    reason:
+      text: help.rs:101 'F1 / ?' -> 'Show or hide this help.', matching the toggle at
+        main.rs:785-791.
+      truncated: false
+  - id: A30
+    source: specs/editor-help-screen/spec.md
+    text: Undo / Redo labels are produced by `egui::Context::format_shortcut` for
+      `Cmd+Z` and `Shift+Cmd+Z` (`Modifiers::COMMAND`, `Modifiers::COMMAND |
+      Modifiers::SHIFT`), so macOS shows ⌘Z / ⇧⌘Z and other platforms show
+      Ctrl+Z / Shift+Ctrl+Z.
+    result: passed
+    reason:
+      text: "The normative half is met exactly: main.rs:488-495 calls
+        ctx.format_shortcut with Modifiers::COMMAND, Key::Z and COMMAND|SHIFT,
+        and help.rs takes the strings as opaque parameters with no platform
+        logic. The trailing prediction about which glyphs appear is the spec's
+        own claim about egui and is not what egui 0.27.2 emits; it cannot be
+        satisfied without the hard-coding the same requirement forbids, so the
+        item is judged on its mandated mechanism. See risks."
+      truncated: false
+  - id: A31
+    source: specs/editor-help-screen/spec.md
+    text: "| Gesture | Effect |"
+    result: passed
+    reason:
+      text: "Table header row: the Mouse section is rendered by the same two-column
+        grid loop with the gesture on the left and the effect on the right."
+      truncated: false
+  - id: A32
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — Select tool | Select the entity under the cursor; drag to
+      move it. Click empty canvas to deselect. |"
+    result: passed
+    reason:
+      text: "help.rs:105-108 text matches main.rs:1187-1268: click selects the
+        top-most entity under the cursor and arms dragging, empty canvas
+        deselects."
+      truncated: false
+  - id: A33
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — Delete tool | Remove the entity under the cursor. |"
+    result: passed
+    reason:
+      text: help.rs:109 matches the Tool::Erase arm at main.rs:1271-1306, which
+        removes the entity under the cursor.
+      truncated: false
+  - id: A34
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — polygon tools | Add a vertex at the cursor. |"
+    result: passed
+    reason:
+      text: help.rs:110 matches main.rs:1166-1173, which pushes world_pos onto
+        drawing_polygon on a single left click.
+      truncated: false
+  - id: A35
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — bitmap tools | Place the sprite at the cursor (a
+      translucent preview follows the cursor). |"
+    result: passed
+    reason:
+      text: help.rs:111-114 matches main.rs:1175-1186 (placement) and the 50%-alpha
+        ghost drawn at the cursor in main.rs:1099-1120.
+      truncated: false
+  - id: A36
+    source: specs/editor-help-screen/spec.md
+    text: "| Double-click — polygon tool | Close and finish the polygon (needs ≥ 3
+      vertices). |"
+    result: passed
+    reason:
+      text: help.rs:115-118 matches main.rs:1149-1162, where a double-click with the
+        polygon tool finalises the polygon only when points.len() >= 3.
+      truncated: false
+  - id: A37
+    source: specs/editor-help-screen/spec.md
+    text: "| Double-click — Select tool on a polygon | Enter vertex-edit mode for
+      that polygon. |"
+    result: passed
+    reason:
+      text: help.rs:119-122 matches main.rs:1238-1246, which enters vertex-edit mode
+        on a double-click on a polygon with the Select tool.
+      truncated: false
+  - id: A38
+    source: specs/editor-help-screen/spec.md
+    text: "| Right click — polygon tool | Finish the polygon being drawn. |"
+    result: passed
+    reason:
+      text: help.rs:123 matches main.rs:1317-1333, secondary_clicked && self.tool ==
+        Tool::DrawPolygon finalises the polygon.
+      truncated: false
+  - id: A39
+    source: specs/editor-help-screen/spec.md
+    text: "| Drag (edit mode) | Move the selected vertex; click a vertex first to
+      select it. |"
+    result: passed
+    reason:
+      text: help.rs:124-127 matches main.rs:1202-1206 (clicking a vertex selects it
+        and sets dragging_polygon_point) and main.rs:972-984 (the drag moves
+        that vertex).
+      truncated: false
+  - id: A40
+    source: specs/editor-help-screen/spec.md
+    text: "| Click outside the polygon (edit mode) | Leave vertex-edit mode. |"
+    result: passed
+    reason:
+      text: help.rs:128 matches main.rs:1208-1214, which clears editing_polygon_entity
+        when the click is outside the polygon and off every vertex.
+      truncated: false
+  - id: A41
+    source: specs/editor-help-screen/spec.md
+    text: "| Drag the toolbox | Move the toolbox anywhere on screen. |"
+    result: passed
+    reason:
+      text: "help.rs:135 exact match. Drag continuity re-derived across frames at
+        main.rs:926-948: the !pointer_over_help guard now sits only on the start
+        branch (`if toolbox_rect.contains(pos) && !pointer_over_help { if
+        !self.dragging_toolbox {...} }`), while the move block `if
+        self.dragging_toolbox { ... self.drag_start = Some(current); }` is
+        inside the unguarded `if pointer_pressed && toolbox_layout.is_some()`
+        and keeps running when the cursor enters help_rect. drag_start is
+        rewritten every frame, per-frame delta stays small, so the toolbox
+        neither freezes nor jumps by an accumulated delta on exit."
+      truncated: false
+  - id: A42
+    source: specs/editor-help-screen/spec.md
+    text: "Generated at runtime from `ToolboxLayout.tools` (`src/toolboxes.json`).
+      Every tool appears exactly once, in file order, as: humanised name (e.g.
+      `coin_tool` → `Coin`, `death_trap_tool` → `Death trap`), its
+      `description`, and its kind (`bitmap` — click to place a sprite; `polygon`
+      — click vertices, Enter / double-click / right-click to finish; `tool` — a
+      mode)."
+    result: passed
+    reason:
+      text: help.rs:132-143 iterates defs in file order producing
+        humanize_tool_name(name) plus description + kind_hint; humanize gives
+        coin_tool->Coin and death_trap_tool->Death trap (tested), and kind_hint
+        gives the three prescribed kind blurbs. The real-JSON test proves one
+        entry per tool with its description.
+      truncated: false
+  - id: A43
+    source: specs/editor-help-screen/spec.md
+    text: A tool of kind `tool` whose name is neither `select_tool` nor
+      `delete_tool` is not implemented by the editor (it currently falls through
+      to Select); its entry ends with **"— not yet implemented"**. This is
+      derived from the same rule the editor uses to map tool names to modes, not
+      from a hand-maintained list.
+    result: passed
+    reason:
+      text: help.rs:71-73 def.tool_type != "tool" || matches!(def.name.as_str(),
+        "select_tool" | "delete_tool") mirrors the mode match at main.rs:950-958
+        where any other tool-kind name falls through to Tool::Select;
+        help.rs:137-140 appends the not-yet-implemented suffix. Tests passed.
+      truncated: false
+  - id: A44
+    source: specs/editor-help-screen/spec.md
+    text: If the toolbox layout failed to load, the section shows a single line
+      saying the toolbox could not be loaded, rather than being empty.
+    result: passed
+    reason:
+      text: help.rs:144 falls back to a single HelpEntry::new("Tools", NO_TOOLBOX) for
+        both None and an empty list; test
+        missing_or_empty_toolbox_shows_a_notice_instead_of_nothing passed.
+      truncated: false
+  - id: A45
+    source: specs/editor-help-screen/spec.md
+    text: "| Item | Effect |"
+    result: passed
+    reason:
+      text: "Table header row: the File menu section uses the same two-column grid
+        with the item on the left and its effect on the right."
+      truncated: false
+  - id: A46
+    source: specs/editor-help-screen/spec.md
+    text: "| Background Image | Choose a PNG to show behind the level. |"
+    result: passed
+    reason:
+      text: help.rs:148 'Background Image' -> 'Choose a PNG to show behind the
+        level.', matching main.rs:694-703 (PNG file filter,
+        load_background_image).
+      truncated: false
+  - id: A47
+    source: specs/editor-help-screen/spec.md
+    text: "| Load Level | Open a level JSON file. |"
+    result: passed
+    reason:
+      text: help.rs:149 'Load Level' -> 'Open a level JSON file.', matching
+        main.rs:705-711 / load_level (JSON filter).
+      truncated: false
+  - id: A48
+    source: specs/editor-help-screen/spec.md
+    text: "| Save Level | Write the level JSON file. |"
+    result: passed
+    reason:
+      text: help.rs:150 'Save Level' -> 'Write the level JSON file.', matching
+        main.rs:712-718 / save_level.
+      truncated: false
+  - id: A49
+    source: specs/editor-help-screen/spec.md
+    text: "| Exit | Quit; asks whether to save first when there are unsaved changes.
+      |"
+    result: passed
+    reason:
+      text: help.rs:151 'Exit' -> 'Quit; asks whether to save first when there are
+        unsaved changes.', matching main.rs:720-727 plus the Unsaved Changes
+        dialog at main.rs:742-766.
+      truncated: false
+  - id: A50
+    source: specs/editor-help-screen/spec.md
+    text: "Content is built by a pure `help` module: `HelpContent::build(tools:
+      Option<&[ToolDef]>, undo_label: &str, redo_label: &str) -> HelpContent`
+      with `keyboard`, `mouse`, `tools`, `file` entry lists, plus
+      `humanize_tool_name` and `is_tool_implemented` helpers, and
+      `escape_closes_help(help_open) -> bool`. The module has no egui `Context`
+      / `Ui` dependency so completeness is unit-tested."
+    result: passed
+    reason:
+      text: "src/help.rs declares the full named API:
+        HelpContent::build(Option<&[ToolDef]>, &str, &str) (help.rs:93) with
+        public keyboard/mouse/tools/file fields, humanize_tool_name (65),
+        is_tool_implemented (77) and escape_closes_help(help_open: bool) -> bool
+        (48-50). The predicate is genuine API on the live Escape path - imported
+        at main.rs:19, called at main.rs:848, and used internally by
+        escape_action (help.rs:53) - not dead code. The module imports only
+        crate::toolbox::ToolDef; 12 unit tests pass."
+      truncated: false
+  - id: A51
+    source: specs/editor-help-screen/spec.md
+    text: "`main.rs` owns `help_open`, renders the window from `HelpContent`, and
+      wires the menu item, `F1`, `?` and the Escape priority."
+    result: passed
+    reason:
+      text: main.rs owns help_open (77, 121), renders from HelpContent (491-531), and
+        wires the menu item (729-735), F1/? (784-792) and the Escape priority
+        (837-862).
+      truncated: false
+  - id: A52
+    source: specs/editor-help-screen/spec.md
+    text: A1 — `Help → Keyboard & Commands` opens the help window.
+    result: passed
+    reason:
+      text: "Same evidence as A1/A13: main.rs:730-733 sets help_open = true and
+        render_help_window draws the window on the next frame."
+      truncated: false
+  - id: A53
+    source: specs/editor-help-screen/spec.md
+    text: A2 — `F1` and `?` each toggle the help window.
+    result: passed
+    reason:
+      text: "Same evidence as A2/A14: main.rs:785-791 flips help_open on either key,
+        gated by !ctx.wants_keyboard_input()."
+      truncated: false
+  - id: A54
+    source: specs/editor-help-screen/spec.md
+    text: A3 — With help open, `Escape` closes it and does not cancel a polygon /
+      edit mode; with help closed, `Escape` behaves as before.
+    result: passed
+    reason:
+      text: "Same evidence as A3/A16: escape_action returns CloseHelp first and the
+        main.rs:845-848 arm mutates only help_open; the closed-help arms are
+        unchanged from the pre-change code."
+      truncated: false
+  - id: A55
+    source: specs/editor-help-screen/spec.md
+    text: A4 — The window is closable, draggable and non-modal; arrow-key scrolling
+      and canvas clicks keep working while it is open.
+    result: passed
+    reason:
+      text: "Close button and drag: main.rs:500-504 (.open(&mut open), no
+        .movable(false)). Arrow-key scrolling and the canvas click handler run
+        unconditionally each frame and are not guarded by help_open, so they
+        keep working while help is open."
+      truncated: false
+  - id: A56
+    source: specs/editor-help-screen/spec.md
+    text: A5 — Keyboard section lists Arrow keys, Enter, Escape, Delete/Backspace,
+      Undo, Redo, F1 / ? and nothing the editor does not handle.
+    result: passed
+    reason:
+      text: "Same evidence as A5/A21: the seven help rows equal the seven key handlers
+        found by grepping every key_pressed/key_down in the crate, and the
+        equality is unit-tested."
+      truncated: false
+  - id: A57
+    source: specs/editor-help-screen/spec.md
+    text: A6 — Undo/Redo labels come from `format_shortcut` (⌘ on macOS, Ctrl
+      elsewhere).
+    result: passed
+    reason:
+      text: "Same evidence as A6/A30: labels come from ctx.format_shortcut at
+        main.rs:483-490; help.rs contains no platform glyph."
+      truncated: false
+  - id: A58
+    source: specs/editor-help-screen/spec.md
+    text: A7 — Mouse section covers left click per tool, both double-click meanings,
+      right-click, entity / vertex / toolbox drag, and
+      click-outside-to-exit-edit.
+    result: passed
+    reason:
+      text: "Same evidence as A7: help.rs:104-130 covers left click per tool, both
+        double-click meanings, right-click, entity drag, vertex drag, toolbox
+        drag, and click-outside-to-exit; test passed."
+      truncated: false
+  - id: A59
+    source: specs/editor-help-screen/spec.md
+    text: A8 — Tools section lists every `toolboxes.json` tool exactly once with
+      description and kind; `add_point_tool` / `remove_point_tool` flagged "not
+      yet implemented"; `select_tool` / `delete_tool` not flagged.
+    result: passed
+    reason:
+      text: "Same evidence as A8/A42/A43: the real-JSON test asserts len ==
+        layout.tools.len(), unique labels, description contained, flag ==
+        !is_tool_implemented, and flagged == ['Add point','Remove point']
+        against the actual src/toolboxes.json."
+      truncated: false
+  - id: A60
+    source: specs/editor-help-screen/spec.md
+    text: A9 — File section lists the four menu items, noting Exit's unsaved-changes
+      prompt.
+    result: passed
+    reason:
+      text: "Same evidence as A9/A46-A49: help.rs:147-152 plus the test asserting the
+        four labels in order and 'unsaved' in the Exit effect."
+      truncated: false
+  - id: A61
+    source: specs/editor-help-screen/spec.md
+    text: A10 — Body is in a bounded vertical `ScrollArea`; window fits at 800×720.
+    result: passed
+    reason:
+      text: "Same evidence as A10/A19:
+        ScrollArea::vertical().max_height((screen_rect().height()*0.7).max(240.\
+        0)) with default_width(560.0) against the 800x720 minimum inner size."
+      truncated: false
+  - id: A62
+    source: specs/editor-help-screen/spec.md
+    text: "A11 — Help state is view-only: not serialised, no effect on
+      unsaved-changes."
+    result: passed
+    reason:
+      text: "Same evidence as A11/A17: help_open appears only on EditorState;
+        LevelData and save_level/load_level_from_path never touch it, and
+        has_unsaved_changes hashes entities only."
+      truncated: false
+builder_handoff:
+  candidate_id: 86e38082-bdb7-439c-b18c-0e7bea2ae2a5
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:d76b7c13-9908-45a1-96e6-6f164a9e55dd
+  iteration: 3
+  summary:
+    text: "Iteration 3 - one two-line fix to a regression the iteration-2 Verifier
+      flagged in its risks, nothing else changed. The iteration-2 toolbox guard
+      put !pointer_over_help on the OUTER condition of the toolbox drag block,
+      which suspended an already-running drag whenever the cursor crossed the
+      open help window: the block stopped updating drag_start while the pointer
+      was inside the rect, so on exit the toolbox jumped by the whole
+      accumulated delta. The guard now sits on the inner start branch only - `if
+      toolbox_rect.contains(pos) && !pointer_over_help { if
+      !self.dragging_toolbox { ...start... } }` - so a press inside the help
+      window still cannot BEGIN a toolbox drag (the A18 behaviour), while a drag
+      already under way keeps tracking the cursor continuously across the window
+      and the toolbox never jumps. The canvas click guard (help_click) and the
+      right-click polygon guard are untouched, as are help.rs, the Escape
+      wiring, the Help menu, the F1/? toggle and the window rendering.
+      Requirements unchanged. Full acceptance list re-checked after the fix;
+      A1-A62 all addressed."
+    truncated: false
+  addressed_acceptance_ids:
+    - A18
+    - A41
+    - A1
+    - A2
+    - A3
+    - A4
+    - A5
+    - A6
+    - A7
+    - A8
+    - A9
+    - A10
+    - A11
+    - A12
+    - A13
+    - A14
+    - A15
+    - A16
+    - A17
+    - A19
+    - A20
+    - A21
+    - A22
+    - A23
+    - A24
+    - A25
+    - A26
+    - A27
+    - A28
+    - A29
+    - A30
+    - A31
+    - A32
+    - A33
+    - A34
+    - A35
+    - A36
+    - A37
+    - A38
+    - A39
+    - A40
+    - A42
+    - A43
+    - A44
+    - A45
+    - A46
+    - A47
+    - A48
+    - A49
+    - A50
+    - A51
+    - A52
+    - A53
+    - A54
+    - A55
+    - A56
+    - A57
+    - A58
+    - A59
+    - A60
+    - A61
+    - A62
+  checks:
+    - name:
+        text: cargo test
+        truncated: false
+      result: passed
+      note:
+        text: 32 passed, 0 failed - unchanged from iteration 2 (the fix is in the egui
+          input path, which the unit tests do not cover; the 12 help tests, 20
+          scroll/background tests and tests/level1_test.rs all still pass).
+        truncated: false
+    - name:
+        text: cargo build
+        truncated: false
+      result: passed
+      note:
+        text: Compiles; warning set unchanged (7 pre-existing f32-literal, 3
+          pre-existing dead-code), none from help.rs or the new main.rs code.
+        truncated: false
+    - name:
+        text: smoke run
+        truncated: false
+      result: not-run
+      note:
+        text: Not re-run for this iteration; the previous candidate's smoke run passed
+          and this change is a two-line reordering of an existing boolean guard
+          with no new code paths.
+        truncated: false
+    - name:
+        text: interactive toolbox-drag-across-help check
+        truncated: false
+      result: not-run
+      note:
+        text: "Dragging the toolbox over the window in a live session is not automatable
+          here. The fix is verifiable by inspection: the guard moved from the
+          outer `if pointer_pressed && ...` condition to the inner
+          `toolbox_rect.contains(pos)` start branch."
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: The drag-continuity fix is inspection-verifiable only; there is no unit
+        test around the egui pointer path.
+      truncated: false
+    - text: "Other risks the iteration-2 Verifier raised are deliberately not
+        addressed here, being spec-text imprecision or out of scope: egui's
+        format_shortcut emits 'Ctrl+Shift+Z' rather than the spec's literal
+        'Shift+Ctrl+Z' on non-mac and may fall back from the command glyphs on
+        macOS; help_rect is a previous-frame rect (unreachable in practice since
+        the window only opens from a menu click or key press); the Tools section
+        prints each kind's gloss rather than the literal kind word; and the
+        pre-existing 'Unsaved Changes' dialog still has the same pointer
+        pass-through the help window now guards against."
+      truncated: false
+    - text: README.md still documents the stale shortcut list - an explicit non-goal
+        of the confirmed brief.
+      truncated: false
+  known_limits_truncated: false
+  submitted_at: 2026-09-12T07:26:19.274Z
+blockers: []
+verification:
+  candidate_id: 86e38082-bdb7-439c-b18c-0e7bea2ae2a5
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:1cce874b-4b8f-4f81-a2b5-16c09ea062b7
+  iteration: 3
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: pass
+  checks:
+    - id: cargo-build
+      name:
+        text: cargo build
+        truncated: false
+      argv_display:
+        - text: build
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 213
+    - id: cargo-test
+      name:
+        text: cargo test
+        truncated: false
+      argv_display:
+        - text: test
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 209
+  summary:
+    text: "All 62 items re-derived from src/help.rs, src/main.rs and the egui 0.27.2
+      sources without relying on the builder's account; every one holds. The
+      iteration-3 change is sound in both directions: the !pointer_over_help
+      guard now sits only on the drag-START branch (main.rs:932), so a press
+      inside the help window still cannot begin a toolbox drag and - via the
+      separate help_click / secondary_over_help guards - still cannot place,
+      select, delete, finalise a polygon or dirty has_unsaved_changes, while the
+      move block stays unguarded so drag_start is rewritten every frame and an
+      in-flight drag crosses the window without freezing or jumping.
+      Non-modality survives the guards: arrow scrolling, menus and outside
+      clicks are untouched, and wants_keyboard_input() stays false because
+      nothing in the help body requests focus. The one substantive gap is
+      documentary: the code uses ctx.format_shortcut exactly as mandated, but
+      egui's glyph check falls back to 'Cmd+Z' / 'Shift+Cmd+Z' on macOS instead
+      of the symbols the spec predicts, so the spec's illustrative strings
+      should be corrected."
+    truncated: false
+  risks:
+    - text: "A6/A30/A57 glyph prediction is wrong about egui, not about the code: egui
+        0.27.2 format_shortcut only uses the command/shift symbols if
+        TextStyle::Body can render ALL of the four modifier glyphs. The bundled
+        Proportional family contains U+2318 but not U+21E7/U+2325/U+2303, and
+        the app never calls set_fonts, so on macOS the help window will actually
+        read 'Cmd+Z' and 'Shift+Cmd+Z'. Amend the spec text or add a font
+        covering the four symbols - do not hard-code the strings."
+      truncated: false
+    - text: "Non-mac modifier order also differs from the spec's literal text: egui
+        emits ctrl-then-shift ('Ctrl+Shift+Z') where A6/A30 write
+        'Shift+Ctrl+Z'."
+      truncated: false
+    - text: Tools entries print each kind's gloss rather than the literal kind word,
+        so a reader cannot recover the JSON type string verbatim.
+      truncated: false
+    - text: is_tool_implemented duplicates rather than shares main.rs's tool-name
+        match, so the two can silently drift if a new real mode is added to
+        update. No test cross-checks them.
+      truncated: false
+    - text: Sections render no Key/Effect header row; the two-column structure comes
+        only from the Grid.
+      truncated: false
+    - text: On the single frame Escape or F1 closes the window, a click inside the old
+        rect would still be swallowed. Escape/F1 are not clicks, so unreachable
+        in practice.
+      truncated: false
+    - text: "Symmetric with the intended toolbox-drag fix: an entity or vertex drag
+        already under way also continues while the cursor passes over the help
+        window, and its release inside the window still calls save_state()."
+      truncated: false
+    - text: "Pre-existing, not introduced here: a press that begins inside the help
+        window on a spot not overlapping the toolbox could grab the toolbox
+        after leaving the window."
+      truncated: false
+    - text: GUI-only items are judged from widget construction and state-machine
+        tracing; the smoke run and interactive drag check were not re-run this
+        iteration.
+      truncated: false
+  risks_truncated: false
+  completed_at: 2026-09-12T07:36:00.421Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A18
+      - A50
+    summary:
+      text: "The help feature is implemented cleanly and almost entirely matches the
+        spec: a pure, egui-free src/help.rs with 11 passing unit tests
+        (including one that parses the real src/toolboxes.json), and a tight
+        main.rs diff adding help_open, the Help menu, the
+        wants_keyboard_input-gated F1/? toggle, the escape_action priority
+        dispatch, and a non-modal Window whose body is a bounded vertical
+        ScrollArea of two-column grids with format_shortcut-derived Undo/Redo
+        labels. I independently cross-checked every key_pressed/key_down in the
+        crate against the Keyboard section (exact match), every mouse row
+        against the click handlers, and the not-yet-implemented rule against the
+        tool-name match in update; help state is absent from LevelData,
+        save/load and has_unsaved_changes. Two items fail. A18: clicks inside
+        the help window are not captured by it, so clicking in the window with a
+        bitmap tool active spawns an entity behind it and dirties the level.
+        A50: the spec's named helper escape_closes_help(help_open) -> bool does
+        not exist; the module exposes the richer escape_action instead, so the
+        archived spec would document a non-existent API."
+      truncated: false
+    completed_at: 2026-09-12T07:15:20.688Z
+  - goal_cycle: 1
+    iteration: 2
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: "Iteration 2 satisfies all 62 acceptance items. The two
+        previously-defective areas now hold: I enumerated every raw-pointer
+        consumer in EditorState::update and found the four state-mutating paths
+        each gated on the help window's reported rect, so a click inside the
+        window cannot place, select, delete, start a toolbox drag, or dirty
+        has_unsaved_changes; and escape_closes_help(help_open) -> bool exists at
+        src/help.rs:48 and is a real call site on the live Escape path at
+        main.rs:848. The guards are rect-scoped rather than help_open-scoped, so
+        non-modality is intact - arrow-key scrolling is still gated only on
+        ctx.wants_keyboard_input(), and outside clicks still reach canvas and
+        toolbox. A crate-wide grep of key_pressed/key_down confirms the Keyboard
+        section lists exactly the seven handled keys, the Tools section derives
+        from toolboxes.json with the not-implemented rule mirroring the real
+        tool-name match, and no help state is serialised."
+      truncated: false
+    completed_at: 2026-09-12T07:25:33.605Z
+  - goal_cycle: 1
+    iteration: 2
+    attempt: 1
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: "Verifier passed all 62 items for candidate iteration 2, but flagged a
+        real regression introduced by that candidate's toolbox guard: dragging
+        the toolbox across the open help window suspended the drag without
+        updating drag_start, making the toolbox jump on exit. Fixed after
+        verification, so the judged candidate no longer matches the tree;
+        returning to Build for a fresh candidate and a new independent
+        verification rather than accepting a stale pass. Requirements
+        unchanged."
+      truncated: false
+    completed_at: 2026-09-12T07:25:47.190Z
+  - goal_cycle: 1
+    iteration: 3
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: "All 62 items re-derived from src/help.rs, src/main.rs and the egui 0.27.2
+        sources without relying on the builder's account; every one holds. The
+        iteration-3 change is sound in both directions: the !pointer_over_help
+        guard now sits only on the drag-START branch (main.rs:932), so a press
+        inside the help window still cannot begin a toolbox drag and - via the
+        separate help_click / secondary_over_help guards - still cannot place,
+        select, delete, finalise a polygon or dirty has_unsaved_changes, while
+        the move block stays unguarded so drag_start is rewritten every frame
+        and an in-flight drag crosses the window without freezing or jumping.
+        Non-modality survives the guards: arrow scrolling, menus and outside
+        clicks are untouched, and wants_keyboard_input() stays false because
+        nothing in the help body requests focus. The one substantive gap is
+        documentary: the code uses ctx.format_shortcut exactly as mandated, but
+        egui's glyph check falls back to 'Cmd+Z' / 'Shift+Cmd+Z' on macOS
+        instead of the symbols the spec predicts, so the spec's illustrative
+        strings should be corrected."
+      truncated: false
+    completed_at: 2026-09-12T07:36:00.421Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: true
+created_at: 2026-09-12T06:15:31.220Z
