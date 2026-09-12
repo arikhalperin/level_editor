@@ -18,6 +18,13 @@ use scroll::{HeldDirs, ScrollModel};
 mod help;
 use help::{escape_action, escape_closes_help, EscapeAction, HelpContent};
 
+mod game_config;
+
+mod level_size;
+
+mod sim;
+use sim::{CollisionPoly, Simulation, World};
+
 mod entities;
 use entities::{Entity, DrawableEntity};
 
@@ -78,6 +85,25 @@ struct EditorState {
     /// Screen rect of the help window while it is open, so clicks inside it are
     /// consumed by the window instead of falling through to the canvas.
     help_rect: Option<egui::Rect>,
+    /// Screen rect of the Level Size dialog while it is open, so clicks inside it are
+    /// consumed by the dialog instead of falling through to the canvas.
+    size_dialog_rect: Option<egui::Rect>,
+    /// Screen rect of the top menu bar this frame.
+    menu_bar_rect: Option<egui::Rect>,
+    /// Set when a menu item was activated this frame, so the click that chose it is
+    /// never also delivered to the canvas beneath the (now closed) dropdown.
+    ui_consumed_click: bool,
+    /// Explicit level extent, when one has been set. Saved to the level JSON.
+    level_size: Option<Vec2>,
+    /// Open state and in-progress text of the Level Size dialog.
+    size_dialog: Option<(String, String)>,
+    /// The running play simulation. `None` means the editor is not in play mode.
+    play: Option<Simulation>,
+    /// Where the character spawns: the last canvas click in world space, remembered
+    /// across play sessions so a cleared `last_click_pos` falls back to it.
+    play_spawn: Option<Pos2>,
+    /// Tool and tool name to restore when play mode ends.
+    tool_before_play: Option<(Tool, Option<String>)>,
 }
 
 impl Default for EditorState {
@@ -123,6 +149,14 @@ impl Default for EditorState {
             initial_load_done: false,
             help_open: false,
             help_rect: None,
+            size_dialog_rect: None,
+            menu_bar_rect: None,
+            ui_consumed_click: false,
+            level_size: None,
+            size_dialog: None,
+            play: None,
+            play_spawn: None,
+            tool_before_play: None,
         };
         
         trace!("init_state_done");
@@ -211,6 +245,9 @@ impl EditorState {
         
         let mut hasher = DefaultHasher::new();
         format!("{:?}", self.entities).hash(&mut hasher);
+        // The explicit level size is saved with the level, so changing it is an
+        // unsaved change too.
+        format!("{:?}", self.level_size).hash(&mut hasher);
         hasher.finish()
     }
     
@@ -400,6 +437,7 @@ impl EditorState {
             } else {
                 None
             },
+            level_size: self.level_size.map(|s| [s.x, s.y]),
             entities: self.entities.iter().map(|e| e.to_level_entity()).collect(),
         };
 
@@ -447,6 +485,10 @@ impl EditorState {
         if let Some(bg_size) = level_data.background_size {
             self.background_size = Vec2::new(bg_size[0], bg_size[1]);
         }
+        self.level_size = level_data
+            .level_size
+            .map(|s| Vec2::new(s[0], s[1]))
+            .and_then(level_size::validate);
         
         // Clear selections
         self.selected_entity = None;
@@ -475,6 +517,249 @@ impl EditorState {
         }
 
         Ok(())
+    }
+
+    /// True when `pos` is inside a floating panel (help window or Level Size dialog),
+    /// whose clicks belong to that panel and must not reach the canvas beneath.
+    /// True when `pos` is inside a floating panel (help window or Level Size dialog).
+    /// The Level Size dialog is modal: while it is open nothing reaches the canvas. Its
+    /// rect (and the help window's) is kept for one frame after closing so the very
+    /// click that pressed OK / Cancel / the close button cannot fall through.
+    fn pointer_over_panels(&self, pos: Pos2) -> bool {
+        self.size_dialog.is_some()
+            || [self.help_rect, self.size_dialog_rect]
+                .iter()
+                .flatten()
+                .any(|rect| rect.contains(pos))
+    }
+
+    /// True when a click at `pos` belongs to egui UI rather than the level canvas: a
+    /// floating panel, the menu bar, an open dropdown or window (anything painted on a
+    /// non-background layer), or a menu item that was activated this frame. The last
+    /// case matters because egui closes the dropdown in the same frame it reports the
+    /// click, so the layer test alone would let that click through to the canvas.
+    fn pointer_over_ui(&self, ctx: &egui::Context, pos: Pos2) -> bool {
+        self.ui_consumed_click
+            || self.pointer_over_panels(pos)
+            || self.menu_bar_rect.is_some_and(|rect| rect.contains(pos))
+            || ctx
+                .layer_id_at(pos)
+                .is_some_and(|layer| layer.order != egui::Order::Background)
+    }
+
+    /// Maximum (x, y) reached by any entity, or `None` when the level is empty.
+    fn entity_bounds(&self) -> Option<Vec2> {
+        let mut max: Option<Vec2> = None;
+        let mut grow = |x: f32, y: f32| {
+            let m = max.get_or_insert(Vec2::ZERO);
+            m.x = m.x.max(x);
+            m.y = m.y.max(y);
+        };
+        for e in &self.entities {
+            match e {
+                Entity::Bitmap(b) => {
+                    let size = b.get_size();
+                    grow(b.pos.x + size.x, b.pos.y + size.y);
+                }
+                Entity::Polygon(poly) => {
+                    for p in &poly.points {
+                        grow(p.x, p.y);
+                    }
+                }
+            }
+        }
+        max
+    }
+
+    /// The level extent: explicit size, else background, else entity bounds, else default.
+    fn resolved_level_size(&self) -> Vec2 {
+        let bg = (self.background_size.x >= 1.0 && self.background_size.y >= 1.0)
+            .then_some(self.background_size);
+        level_size::resolve(self.level_size, bg, self.entity_bounds()).0
+    }
+
+    /// Collision geometry for play mode, mirroring the game's level import: every polygon
+    /// is solid and `wall_tool` polygons are additionally climbable.
+    fn collision_world(&self) -> World {
+        let polys = self
+            .entities
+            .iter()
+            .filter_map(|e| e.as_polygon())
+            .filter_map(|poly| {
+                let climbable = poly.polygon_type == game_config::CLIMBABLE_POLYGON_TYPE;
+                CollisionPoly::new(&poly.points, climbable)
+            })
+            .collect();
+        World { polys }
+    }
+
+    fn start_play(&mut self) {
+        // Spawn where the level was last clicked, in world coordinates; if the last
+        // gesture cleared that (finishing a polygon does), reuse the previous spawn.
+        let spawn = self
+            .last_click_pos
+            .or(self.play_spawn)
+            .unwrap_or(Pos2::new(100.0, 100.0));
+        self.play_spawn = Some(spawn);
+        self.tool_before_play = Some((self.tool.clone(), self.current_tool_name.clone()));
+        // Drop any in-flight interaction so its release cannot commit an edit mid-play.
+        self.dragging_entity = false;
+        self.dragging_polygon_point = false;
+        self.dragging_toolbox = false;
+        self.drag_start = None;
+        self.play = Some(Simulation::new(spawn));
+        trace!("play_started spawn={:?}", spawn);
+    }
+
+    fn stop_play(&mut self) {
+        if let Some((tool, name)) = self.tool_before_play.take() {
+            self.tool = tool;
+            self.current_tool_name = name;
+        }
+        self.play = None;
+        trace!("play_stopped");
+    }
+
+    fn toggle_play(&mut self) {
+        if self.play.is_some() {
+            self.stop_play();
+        } else {
+            self.start_play();
+        }
+    }
+
+    /// Read the character's buttons, using the game's default bindings.
+    fn play_input(ctx: &egui::Context) -> sim::Input {
+        if ctx.wants_keyboard_input() {
+            return sim::Input::default();
+        }
+        ctx.input(|i| sim::Input {
+            left: i.key_down(egui::Key::A) || i.key_down(egui::Key::ArrowLeft),
+            right: i.key_down(egui::Key::D) || i.key_down(egui::Key::ArrowRight),
+            up: i.key_down(egui::Key::W) || i.key_down(egui::Key::ArrowUp),
+            down: i.key_down(egui::Key::S) || i.key_down(egui::Key::ArrowDown),
+            jump: i.key_down(egui::Key::Space) || i.key_down(egui::Key::Z),
+            dash: i.modifiers.shift || i.key_down(egui::Key::K) || i.key_down(egui::Key::C),
+        })
+    }
+
+    /// Follow the character with the canvas, using the game's camera constants.
+    fn follow_with_camera(&mut self, viewport: egui::Rect, dt: f32) {
+        let Some(play) = &self.play else { return };
+        let target_x = play.pos.x - viewport.width() * 0.5;
+        // Game: goal_y = player.y + CAMERA_OFFSET_Y in a Y-up world, i.e. the camera aims
+        // above the player so the player sits below screen centre. In Y-down that is a
+        // subtraction.
+        let target_y = play.pos.y - viewport.height() * 0.5 - game_config::CAMERA_OFFSET_Y;
+
+        let dx = target_x - self.scroll.offset.x;
+        if dx.abs() > game_config::CAMERA_DEAD_ZONE_X {
+            let k = 1.0 - (-game_config::CAMERA_FOLLOW_RATE_X * dt).exp();
+            self.scroll.offset.x += dx * k;
+        }
+        let mut rate_y = game_config::CAMERA_FOLLOW_RATE_Y;
+        if play.vel.y > game_config::CAMERA_FALL_SPEED_THRESHOLD {
+            rate_y *= game_config::CAMERA_FALL_CATCHUP_MULT;
+        }
+        let k = 1.0 - (-rate_y * dt).exp();
+        self.scroll.offset.y += (target_y - self.scroll.offset.y) * k;
+        self.scroll.offset.x = self.scroll.offset.x.max(0.0);
+        self.scroll.offset.y = self.scroll.offset.y.max(0.0);
+        self.scroll.velocity = Vec2::ZERO;
+    }
+
+    /// Draw the character capsule and the status overlay.
+    fn draw_play(&self, painter: &egui::Painter, offset: Vec2) {
+        let Some(play) = &self.play else { return };
+        let c = play.pos - offset;
+        let r = game_config::PLAYER_CAPSULE_RADIUS;
+        let hh = game_config::PLAYER_CAPSULE_HALF_HEIGHT;
+        let body = egui::Rect::from_min_max(
+            egui::pos2(c.x - r, c.y - hh),
+            egui::pos2(c.x + r, c.y + hh),
+        );
+        let fill = Color32::from_rgb(90, 190, 255);
+        painter.rect_filled(body, 0.0, fill);
+        painter.circle_filled(egui::pos2(c.x, c.y - hh), r, fill);
+        painter.circle_filled(egui::pos2(c.x, c.y + hh), r, fill);
+        painter.circle_stroke(
+            egui::pos2(c.x, c.y - hh),
+            r,
+            egui::Stroke::new(2.0_f32, Color32::BLACK),
+        );
+        // Facing tick.
+        painter.line_segment(
+            [egui::pos2(c.x, c.y), egui::pos2(c.x + play.facing * r, c.y)],
+            egui::Stroke::new(3.0_f32, Color32::BLACK),
+        );
+    }
+
+    /// Modal Level Size dialog. Applies only a valid size.
+    fn render_size_dialog(&mut self, ctx: &egui::Context) {
+        let Some((w_text, h_text)) = self.size_dialog.clone() else {
+            self.size_dialog_rect = None;
+            return;
+        };
+        let mut w_text = w_text;
+        let mut h_text = h_text;
+        let mut close = false;
+        let mut open = true;
+        let mut error: Option<&str> = None;
+
+        let response = egui::Window::new("Level Size")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .show(ctx, |ui| {
+                egui::Grid::new("level_size_grid").num_columns(2).show(ui, |ui| {
+                    ui.label("Width");
+                    ui.text_edit_singleline(&mut w_text);
+                    ui.end_row();
+                    ui.label("Height");
+                    ui.text_edit_singleline(&mut h_text);
+                    ui.end_row();
+                });
+                ui.label(
+                    egui::RichText::new(format!(
+                        "{} to {} px per side",
+                        level_size::MIN_LEVEL_EDGE,
+                        level_size::MAX_LEVEL_EDGE
+                    ))
+                    .weak(),
+                );
+                ui.horizontal(|ui| {
+                    if ui.button("OK").clicked() {
+                        let parsed = (w_text.trim().parse::<f32>(), h_text.trim().parse::<f32>());
+                        match parsed {
+                            (Ok(w), Ok(h)) => match level_size::validate(Vec2::new(w, h)) {
+                                Some(size) => {
+                                    self.level_size = Some(size);
+                                    trace!("level_size_set {:?}", size);
+                                    close = true;
+                                }
+                                None => error = Some("Size out of range; unchanged."),
+                            },
+                            _ => error = Some("Width and height must be numbers."),
+                        }
+                    }
+                    if ui.button("Cancel").clicked() {
+                        close = true;
+                    }
+                });
+                if let Some(msg) = error {
+                    ui.colored_label(Color32::from_rgb(200, 60, 60), msg);
+                    trace!("level_size_rejected w={:?} h={:?}", w_text, h_text);
+                }
+            });
+
+        // Keep the rect through the closing frame; the early return above clears it
+        // on the next frame once the dialog is gone.
+        self.size_dialog_rect = response.map(|r| r.response.rect);
+        if close || !open {
+            self.size_dialog = None;
+        } else {
+            self.size_dialog = Some((w_text, h_text));
+        }
     }
 
     /// Draw the Keyboard & Commands window. Non-modal: the canvas, toolbox and every
@@ -515,7 +800,7 @@ impl EditorState {
                             ("Keyboard", &content.keyboard),
                             ("Mouse", &content.mouse),
                             ("Tools", &content.tools),
-                            ("File menu", &content.file),
+                            ("Menus", &content.file),
                         ];
                         for (title, entries) in sections {
                             ui.heading(title);
@@ -538,8 +823,9 @@ impl EditorState {
         self.help_rect = response.map(|r| r.response.rect);
 
         if !open {
+            // Leave help_rect set for this frame so the close-button click is absorbed;
+            // the early return above clears it next frame.
             self.help_open = false;
-            self.help_rect = None;
             trace!("help_closed_by_button");
         }
     }
@@ -695,11 +981,13 @@ impl eframe::App for EditorState {
         }
 
         trace!("update_menu_bar_start");
+        self.ui_consumed_click = false;
         // Top menu bar
-        egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
+        let menu_bar = egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
                     if ui.button("Background Image").clicked() {
+                        self.ui_consumed_click = true;
                         ui.close_menu();
                         // Open file dialog
                         if let Some(path) = rfd::FileDialog::new()
@@ -710,7 +998,13 @@ impl eframe::App for EditorState {
                             self.load_background_image(path);
                         }
                     }
-                    if ui.button("Load Level").clicked() {
+                    let can_edit = self.play.is_none();
+                    if ui
+                        .add_enabled(can_edit, egui::Button::new("Load Level"))
+                        .on_disabled_hover_text("Stop play mode first")
+                        .clicked()
+                    {
+                        self.ui_consumed_click = true;
                         ui.close_menu();
                         trace!("menu_load_clicked");
                         if let Err(e) = self.load_level() {
@@ -718,6 +1012,7 @@ impl eframe::App for EditorState {
                         }
                     }
                     if ui.button("Save Level").clicked() {
+                        self.ui_consumed_click = true;
                         ui.close_menu();
                         trace!("menu_save_clicked");
                         if let Err(e) = self.save_level() {
@@ -726,6 +1021,7 @@ impl eframe::App for EditorState {
                     }
                     ui.separator();
                     if ui.button("Exit").clicked() {
+                        self.ui_consumed_click = true;
                         ui.close_menu();
                         if self.has_unsaved_changes() {
                             self.exit_requested = true;
@@ -734,8 +1030,26 @@ impl eframe::App for EditorState {
                         }
                     }
                 });
+                ui.menu_button("Level", |ui| {
+                    if ui.button("Level Size\u{2026}").clicked() {
+                        self.ui_consumed_click = true;
+                        ui.close_menu();
+                        let size = self.resolved_level_size();
+                        self.size_dialog = Some((size.x.to_string(), size.y.to_string()));
+                        trace!("menu_level_size_clicked current={:?}", size);
+                    }
+                });
+                ui.menu_button("Play", |ui| {
+                    let label = if self.play.is_some() { "Stop" } else { "Play" };
+                    if ui.button(label).clicked() {
+                        self.ui_consumed_click = true;
+                        ui.close_menu();
+                        self.toggle_play();
+                    }
+                });
                 ui.menu_button("Help", |ui| {
                     if ui.button("Keyboard & Commands").clicked() {
+                        self.ui_consumed_click = true;
                         ui.close_menu();
                         self.help_open = true;
                         trace!("menu_help_clicked");
@@ -743,8 +1057,10 @@ impl eframe::App for EditorState {
                 });
             });
         });
+        self.menu_bar_rect = Some(menu_bar.response.rect);
 
         self.render_help_window(ctx);
+        self.render_size_dialog(ctx);
         
         // Handle exit with unsaved changes prompt
         if self.exit_requested {
@@ -779,7 +1095,8 @@ impl eframe::App for EditorState {
         // Two-axis arrow-key scrolling with momentum. Arrow keys are ignored while a
         // text field owns the keyboard so text entry keeps working.
         let dt = ctx.input(|i| i.stable_dt);
-        let held = if ctx.wants_keyboard_input() {
+        let held = if ctx.wants_keyboard_input() || self.play.is_some() {
+            // While playing, the arrow keys drive the character instead of the canvas.
             HeldDirs::default()
         } else {
             ctx.input(|i| HeldDirs {
@@ -789,7 +1106,7 @@ impl eframe::App for EditorState {
                 down: i.key_down(egui::Key::ArrowDown),
             })
         };
-        if !ctx.wants_keyboard_input() {
+        if !ctx.wants_keyboard_input() && self.size_dialog.is_none() {
             let toggle_help = ctx.input(|i| {
                 i.key_pressed(egui::Key::F1) || i.key_pressed(egui::Key::Questionmark)
             });
@@ -797,6 +1114,28 @@ impl eframe::App for EditorState {
                 self.help_open = !self.help_open;
                 trace!("help_toggled open={}", self.help_open);
             }
+            if ctx.input(|i| i.key_pressed(egui::Key::F5)) {
+                self.toggle_play();
+            }
+            if self.play.is_some() && ctx.input(|i| i.key_pressed(egui::Key::R)) {
+                if let Some(play) = &mut self.play {
+                    play.respawn();
+                    trace!("play_respawned");
+                }
+            }
+        }
+
+        // Advance the play simulation on its own fixed timestep, then let the camera
+        // follow. Play mode always repaints so the motion is continuous.
+        if self.play.is_some() {
+            let input = Self::play_input(ctx);
+            let world = self.collision_world();
+            if let Some(play) = &mut self.play {
+                play.advance(&world, input, dt);
+            }
+            let viewport = ctx.available_rect();
+            self.follow_with_camera(viewport, dt);
+            ctx.request_repaint();
         }
 
         self.scroll.step(held, dt);
@@ -814,8 +1153,12 @@ impl eframe::App for EditorState {
 
             // Arrow-key scrolling is handled by the ScrollModel step above.
             
+            // Every editor command below can change the level, so all of them are inert
+            // while play mode is running.
+            let editing = self.play.is_none() && self.size_dialog.is_none();
+
             // Finalize polygon with Enter key
-            if i.key_pressed(egui::Key::Enter) {
+            if editing && i.key_pressed(egui::Key::Enter) {
                 if let Some(points) = self.drawing_polygon.take() {
                     if points.len() >= 3 {
                         self.save_state();
@@ -831,7 +1174,7 @@ impl eframe::App for EditorState {
             }
             
             // Undo with Cmd+Z (Ctrl+Z on Windows/Linux)
-            if i.key_pressed(egui::Key::Z) && i.modifiers.command {
+            if editing && i.key_pressed(egui::Key::Z) && i.modifiers.command {
                 if i.modifiers.shift {
                     // Redo with Shift+Cmd+Z (Shift+Ctrl+Z on Windows/Linux)
                     self.redo();
@@ -850,8 +1193,8 @@ impl eframe::App for EditorState {
                 } else {
                     escape_action(
                         self.help_open,
-                        self.drawing_polygon.is_some(),
-                        self.editing_polygon_entity.is_some(),
+                        editing && self.drawing_polygon.is_some(),
+                        editing && self.editing_polygon_entity.is_some(),
                     )
                 };
                 match action {
@@ -875,7 +1218,7 @@ impl eframe::App for EditorState {
             }
             
             // Delete selected polygon point with Delete or Backspace key
-            if i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace) {
+            if editing && (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace)) {
                 if let (Some(entity_idx), Some(point_idx)) = (self.editing_polygon_entity, self.editing_polygon_point) {
                     if entity_idx < self.entities.len() {
                         let can_delete = if let Entity::Polygon(ref poly) = self.entities[entity_idx] {
@@ -920,10 +1263,7 @@ impl eframe::App for EditorState {
         // A press inside the help window belongs to the window, not the toolbox. This
         // only blocks *starting* a drag: one already under way keeps tracking the
         // cursor across the window, so the toolbox never jumps.
-        let pointer_over_help = matches!(
-            (self.help_rect, pointer_pos),
-            (Some(rect), Some(pos)) if rect.contains(pos)
-        );
+        let pointer_over_help = pointer_pos.is_some_and(|pos| self.pointer_over_panels(pos));
         // Drag logic for toolbox
         if pointer_pressed && self.toolbox_layout.is_some() {
             let layout = self.toolbox_layout.as_ref().unwrap();
@@ -989,7 +1329,7 @@ impl eframe::App for EditorState {
 
         trace!("update_entity_drag_start dragging={} selected={:?}", self.dragging_entity, self.selected_entity);
         // Handle polygon point dragging
-        if self.dragging_polygon_point && pointer_pressed {
+        if self.dragging_polygon_point && pointer_pressed && self.play.is_none() {
             if let (Some(pos), Some(entity_idx), Some(point_idx)) = (pointer_pos, self.editing_polygon_entity, self.editing_polygon_point) {
                 if entity_idx < self.entities.len() {
                     if let Entity::Polygon(ref mut poly) = self.entities[entity_idx] {
@@ -1013,7 +1353,7 @@ impl eframe::App for EditorState {
         }
         
         // Handle entity dragging
-        if self.dragging_entity && pointer_pressed {
+        if self.dragging_entity && pointer_pressed && self.play.is_none() {
             if let (Some(pos), Some(entity_idx)) = (pointer_pos, self.selected_entity) {
                 if entity_idx < self.entities.len() {
                     // Initialize drag_start if not set
@@ -1052,6 +1392,15 @@ impl eframe::App for EditorState {
 
             // Draw background image
             self.background_controller.draw(ctx, self.scroll_offset, ui.clip_rect(), painter);
+
+            // Level boundary: the editable extent, scrolling with everything else.
+            let bounds = level_size::boundary_rect(self.resolved_level_size())
+                .translate(-self.scroll_offset);
+            painter.rect_stroke(
+                bounds,
+                0.0,
+                egui::Stroke::new(1.5_f32, Color32::from_rgb(120, 140, 200)),
+            );
 
             // Draw current drawing polygon
             if let Some(points) = &self.drawing_polygon {
@@ -1149,11 +1498,21 @@ impl eframe::App for EditorState {
                     } else {
                         false
                     };
-                    // Clicks inside the help window are consumed by the window, so they
+                    // Clicks inside a floating panel are consumed by that panel, so they
                     // never place, select or delete anything on the canvas behind it.
-                    let help_click = self.help_rect.map_or(false, |rect| rect.contains(pos));
-                    
-                    if !toolbox_click && !help_click {
+                    let help_click = self.pointer_over_ui(ctx, pos);
+
+                    // While playing, a canvas click only moves the spawn point; the level
+                    // is never touched.
+                    if self.play.is_some() && !toolbox_click && !help_click {
+                        let spawn = pos + self.scroll_offset;
+                        self.play_spawn = Some(spawn);
+                        self.last_click_pos = Some(spawn);
+                        if let Some(play) = &mut self.play {
+                            play.respawn_at(spawn);
+                        }
+                        trace!("play_spawn_moved {:?}", spawn);
+                    } else if !toolbox_click && !help_click {
                         // Adjust position for scroll offset
                         let world_pos = pos + self.scroll_offset;
                         
@@ -1337,11 +1696,13 @@ impl eframe::App for EditorState {
             }
             
             // Right-click to finalize current polygon
-            let secondary_over_help = matches!(
-                (self.help_rect, pointer_pos),
-                (Some(rect), Some(pos)) if rect.contains(pos)
-            );
-            if secondary_clicked && self.tool == Tool::DrawPolygon && !secondary_over_help {
+            let secondary_over_help = pointer_pos.is_some_and(|pos| self.pointer_over_ui(ctx, pos));
+            // Right-click finalises a polygon, so it must not fire while playing.
+            if secondary_clicked
+                && self.tool == Tool::DrawPolygon
+                && !secondary_over_help
+                && self.play.is_none()
+            {
                 if let Some(points) = self.drawing_polygon.take() {
                     if points.len() >= 3 {
                         self.save_state();
@@ -1359,10 +1720,30 @@ impl eframe::App for EditorState {
                 self.last_click_pos = None;
             }
 
+            self.draw_play(painter, self.scroll_offset);
+            if let Some(play) = &self.play {
+                let text = format!(
+                    "PLAY  pos ({:.0}, {:.0})  {}  {}   [F5 stop] [R respawn] [click sets spawn]",
+                    play.pos.x,
+                    play.pos.y,
+                    if play.grounded { "grounded" } else { "airborne" },
+                    play.state.label(),
+                );
+                let panel = ui.clip_rect();
+                painter.text(
+                    egui::pos2(panel.left() + 8.0, panel.top() + 8.0),
+                    egui::Align2::LEFT_TOP,
+                    text,
+                    egui::FontId::monospace(13.0),
+                    Color32::from_rgb(30, 30, 30),
+                );
+            }
+
+            let level_extent = self.resolved_level_size();
             render_level_minimap(
                 ctx,
                 &mut self.background_controller,
-                self.background_size,
+                level_extent,
                 self.scroll_offset,
                 &self.entities,
                 ui.clip_rect(),

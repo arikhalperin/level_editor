@@ -105,9 +105,25 @@ impl HelpContent {
             HelpEntry::new(undo_label, "Undo the last change."),
             HelpEntry::new(redo_label, "Redo the last undone change."),
             HelpEntry::new("F1 / ?", "Show or hide this help."),
+            HelpEntry::new("F5", "Start or stop play mode."),
+            HelpEntry::new("R", "Respawn the character at the spawn point (play mode)."),
+            HelpEntry::new(
+                "A / D  or  \u{2190} / \u{2192}",
+                "Move the character left and right (play mode).",
+            ),
+            HelpEntry::new(
+                "W / S  or  \u{2191} / \u{2193}",
+                "Look up and down; down also fast-falls and climbs down (play mode).",
+            ),
+            HelpEntry::new("Space or Z", "Jump, and wall jump off a wall (play mode)."),
+            HelpEntry::new("Shift, K or C", "Dash (play mode)."),
         ];
 
         let mouse = vec![
+            HelpEntry::new(
+                "Left click (play mode)",
+                "Move the spawn point and respawn there. The level is never changed while playing.",
+            ),
             HelpEntry::new(
                 "Left click — Select tool",
                 "Select the entity under the cursor; drag to move it. Click empty canvas to deselect.",
@@ -151,10 +167,19 @@ impl HelpContent {
         };
 
         let file = vec![
-            HelpEntry::new("Background Image", "Choose a PNG to show behind the level."),
-            HelpEntry::new("Load Level", "Open a level JSON file."),
-            HelpEntry::new("Save Level", "Write the level JSON file."),
-            HelpEntry::new("Exit", "Quit; asks whether to save first when there are unsaved changes."),
+            HelpEntry::new("File \u{2192} Background Image", "Choose a PNG to show behind the level."),
+            HelpEntry::new("File \u{2192} Load Level", "Open a level JSON file."),
+            HelpEntry::new("File \u{2192} Save Level", "Write the level JSON file."),
+            HelpEntry::new(
+                "File \u{2192} Exit",
+                "Quit; asks whether to save first when there are unsaved changes.",
+            ),
+            HelpEntry::new(
+                "Level \u{2192} Level Size\u{2026}",
+                "Set the level's width and height in pixels; saved with the level.",
+            ),
+            HelpEntry::new("Play \u{2192} Play / Stop", "Start or stop play mode (same as F5)."),
+            HelpEntry::new("Help \u{2192} Keyboard & Commands", "Show this window."),
         ];
 
         Self { keyboard, mouse, tools, file }
@@ -232,7 +257,21 @@ mod tests {
         let labels = labels(&c.keyboard);
         assert_eq!(
             labels,
-            vec!["← → ↑ ↓", "Enter", "Escape", "Delete / Backspace", "⌘Z", "⇧⌘Z", "F1 / ?"],
+            vec![
+                "← → ↑ ↓",
+                "Enter",
+                "Escape",
+                "Delete / Backspace",
+                "⌘Z",
+                "⇧⌘Z",
+                "F1 / ?",
+                "F5",
+                "R",
+                "A / D  or  ← / →",
+                "W / S  or  ↑ / ↓",
+                "Space or Z",
+                "Shift, K or C",
+            ],
             "keyboard section must match the keys handled in EditorState::update exactly"
         );
     }
@@ -249,6 +288,7 @@ mod tests {
     fn mouse_section_covers_every_gesture() {
         let text = all_text(&build_default(None).mouse);
         for needle in [
+            "Left click (play mode)",
             "Left click — Select tool",
             "Left click — Delete tool",
             "Left click — polygon tools",
@@ -265,9 +305,21 @@ mod tests {
     }
 
     #[test]
-    fn file_section_lists_the_four_menu_items_and_exit_prompt() {
+    fn menu_section_lists_every_menu_item_and_the_exit_prompt() {
         let c = build_default(None);
-        assert_eq!(labels(&c.file), vec!["Background Image", "Load Level", "Save Level", "Exit"]);
+        assert_eq!(
+            labels(&c.file),
+            vec![
+                "File → Background Image",
+                "File → Load Level",
+                "File → Save Level",
+                "File → Exit",
+                "Level → Level Size…",
+                "Play → Play / Stop",
+                "Help → Keyboard & Commands",
+            ],
+            "the menus section must list every menu item the editor offers"
+        );
         assert!(c.file[3].effect.contains("unsaved"), "Exit must mention the unsaved-changes prompt");
     }
 

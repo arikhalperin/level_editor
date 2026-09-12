@@ -1,0 +1,1221 @@
+schema: comet.native.v4
+name: level-size-and-play-simulation
+language: en
+phase: archive
+status: done
+state_version: 16
+brief: brief.md
+spec_changes:
+  - capability: level-size
+    operation: create
+    source: specs/level-size/spec.md
+  - capability: play-simulation
+    operation: create
+    source: specs/play-simulation/spec.md
+workspace:
+  isolation: current
+  change_branch: main
+  target_branch: main
+  finish: null
+loop:
+  stage: done
+  goal_cycle: 1
+  iteration: 4
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 3
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: null
+acceptance:
+  - id: A1
+    source: brief.md
+    text: "A1 — Level Size dialog: `Level → Level Size…` opens a dialog whose Width
+      and Height are pre-filled from the current level size; entering new values
+      and pressing OK changes the level size, and Cancel leaves it unchanged."
+    result: passed
+    reason:
+      text: main.rs:957-963 Level menu; render_size_dialog applies only a validated
+        size on OK; Cancel closes unchanged.
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: "A2 — Size fallback order: with no saved `level_size`, the dialog and the
+      level extent use the background image size; with no background, the
+      bounding box of all entities; with neither, 1920×1080."
+    result: passed
+    reason:
+      text: resolved_level_size (main.rs:532-537) + level_size::resolve
+        (level_size.rs:41-55); test
+        resolution_order_prefers_explicit_then_background_then_entities_then_default.
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: "A3 — Persisted: saving writes `level_size` into the level JSON, and
+      loading that file restores the size. A level file without `level_size`
+      loads exactly as before with no error."
+    result: passed
+    reason:
+      text: "save_level writes level_size (main.rs:429); load reads and revalidates
+        (main.rs:477-480); #[serde(default)] at level_data.rs:19-20. Tests
+        level_size_round_trips_through_save_and_load (level_data.rs:67),
+        a_file_without_level_size_loads_unchanged (82) and
+        a_file_with_level_size_null_loads_as_none (97)."
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: "A4 — Boundary drawn: with a level size set, an outline is drawn on the
+      canvas from world (0,0) to (width, height), scrolling with the level like
+      every other element."
+    result: passed
+    reason:
+      text: main.rs:1315-1321 strokes boundary_rect(resolved_level_size()) translated
+        by -scroll_offset.
+      truncated: false
+  - id: A5
+    source: brief.md
+    text: "A5 — Minimap extent: with an explicit level size, the minimap's thumbnail
+      area and viewport rectangle are computed against that size rather than the
+      background size."
+    result: passed
+    reason:
+      text: main.rs:1659-1666 passes the resolved size as the minimap extent, driving
+        thumbnail and viewport rect.
+      truncated: false
+  - id: A6
+    source: brief.md
+    text: "A6 — Rejects bad input: width or height that is non-finite, ≤ 0, or above
+      1 000 000 is refused and the previous size is kept."
+    result: passed
+    reason:
+      text: is_valid_size requires finite and 1..=1_000_000 (level_size.rs:25-28); a
+        rejected entry only sets an error label. Test
+        rejects_non_finite_zero_negative_and_oversized_values.
+      truncated: false
+  - id: A7
+    source: brief.md
+    text: "A7 — Scrolling still unbounded: after setting a small level size, the
+      canvas still scrolls past the boundary in both axes and entities can still
+      be placed beyond it."
+    result: passed
+    reason:
+      text: ScrollModel::step_axis clamps only at the origin (scroll.rs:80-83);
+        placement paths carry no extent test.
+      truncated: false
+  - id: A8
+    source: brief.md
+    text: "A8 — Play toggle: `Play → Play / Stop` and `F5` each toggle play mode;
+      the character appears on entering and disappears on leaving."
+    result: passed
+    reason:
+      text: Play menu (main.rs:965-970) and F5 (main.rs:1036-1038) both call
+        toggle_play; draw_play early-returns when play is None.
+      truncated: false
+  - id: A9
+    source: brief.md
+    text: "A9 — Spawn point: entering play spawns the character at the last canvas
+      click in world coordinates, or at (100, 100) if nothing was clicked. `R`
+      respawns there. A left click during play moves the spawn and respawns."
+    result: passed
+    reason:
+      text: "start_play spawns at last_click_pos (world coords) else prior play_spawn
+        else (100,100) (main.rs:596-611); R -> play.respawn()
+        (main.rs:1120-1125); click during play sets spawn and respawn_at
+        (main.rs:1507-1515). Menu-item clicks can no longer reach this handler:
+        ui_consumed_click is reset before the bar is drawn, set in every menu
+        item's clicked() branch, and read by the canvas click sites that run
+        last."
+      truncated: false
+  - id: A10
+    source: brief.md
+    text: "A10 — Non-destructive: during play, clicking does not place, select,
+      delete or move any entity; the entity list is byte-identical before and
+      after a play session, and `has_unsaved_changes()` is unchanged by
+      entering, playing and leaving."
+    result: passed
+    reason:
+      text: "All entity mutators gated: Enter/undo/redo/Delete via `editing`
+        (main.rs:1158), point/entity drag via play.is_none() (main.rs:1318,1343)
+        with drag flags cleared in start_play so release paths cannot
+        save_state, canvas click takes the play branch (main.rs:1507),
+        right-click gated (main.rs:1703), Load Level disabled (main.rs:1003).
+        start_play/stop_play touch neither entities nor level_size nor
+        last_save_hash, so has_unsaved_changes() is unchanged by
+        enter/play/leave via menu or F5."
+      truncated: false
+  - id: A11
+    source: brief.md
+    text: "A11 — Editor restored: leaving play mode restores the previously selected
+      tool and the editor's normal input handling."
+    result: passed
+    reason:
+      text: stop_play (main.rs:580-587) restores both self.tool and
+        self.current_tool_name from tool_before_play and sets play = None, which
+        re-enables editing, the arrow-key scroll branch (1047) and every
+        play.is_none() gate.
+      truncated: false
+  - id: A12
+    source: brief.md
+    text: "A12 — Solid geometry: the character lands on and is blocked by polygon
+      entities, and does not pass through them when running or falling at full
+      speed."
+    result: passed
+    reason:
+      text: Tests character_lands_on_a_polygon_surface and
+        does_not_tunnel_through_the_floor_at_max_fall_speed; integrate sub-steps
+        at a quarter capsule radius (sim.rs:430-435).
+      truncated: false
+  - id: A13
+    source: brief.md
+    text: "A13 — Run constants: horizontal speed saturates at 600 px/s, reaching it
+      in about 0.13 s from rest on the ground."
+    result: passed
+    reason:
+      text: step_horizontal accelerates at 4500 toward 600 (sim.rs:337-355); test
+        run_saturates_at_run_speed_in_about_point_one_three_seconds.
+      truncated: false
+  - id: A14
+    source: brief.md
+    text: "A14 — Jump height: a full-hold standing jump rises about 365 px above the
+      standing height, within a 10% tolerance; releasing the jump key early
+      produces a measurably lower hop."
+    result: passed
+    reason:
+      text: jump_speed = sqrt(2*GRAVITY*JUMP_HEIGHT) (sim.rs:204-206); tests
+        full_hold_jump_reaches_the_configured_apex and
+        releasing_jump_early_gives_a_lower_hop.
+      truncated: false
+  - id: A15
+    source: brief.md
+    text: "A15 — Coyote time and jump buffer: a jump pressed up to 0.12 s after
+      walking off a ledge still jumps; a jump pressed up to 0.1 s before landing
+      fires on landing."
+    result: passed
+    reason:
+      text: coyote_left set to 0.12 on leaving ground sim.rs:498-505; jump_buffer_left
+        set to 0.1 on press sim.rs:288-290. Tests
+        coyote_window_is_exactly_coyote_time_at_its_boundaries (jumps at
+        0.12-2dt, refuses at 0.12+2dt) and
+        jump_buffer_honours_presses_inside_the_window_and_forgets_older_ones
+        (fires at 0.07 s lead, not at 0.3 s). The buffer test does not probe the
+        0.1 s edge; code correct by inspection.
+      truncated: false
+  - id: A16
+    source: brief.md
+    text: "A16 — Fall limits: downward speed never exceeds 950 px/s, and holding
+      down while falling increases the downward acceleration by 1.8×."
+    result: passed
+    reason:
+      text: step_gravity clamps to 950 and multiplies by 1.8 on down (sim.rs:412-426);
+        tests fall_speed_is_capped_at_max_fall_speed and
+        holding_down_falls_faster.
+      truncated: false
+  - id: A17
+    source: brief.md
+    text: "A17 — Dash: a ground dash covers about 450 px at up to 1500 px/s, cannot
+      be repeated within 0.4 s, and exactly one air dash is allowed before
+      touching the ground again."
+    result: passed
+    reason:
+      text: Dash 0.3 s at 1500 (sim.rs:290-325), cooldown 0.4, MAX_AIR_DASHES 1; four
+        dash tests.
+      truncated: false
+  - id: A18
+    source: brief.md
+    text: "A18 — Wall slide and wall jump: sliding down a wall caps descent at 110
+      px/s; a wall jump rises about 190 px and carries about 170 px away from
+      the wall, with horizontal input ignored for 0.18 s."
+    result: passed
+    reason:
+      text: Wall slide cap 110 (sim.rs:421-426); wall jump sqrt(2g*190) with carry
+        solved for 170 and lock 0.18 (sim.rs:369-386); three tests.
+      truncated: false
+  - id: A19
+    source: brief.md
+    text: "A19 — Climb: against a `wall_tool` polygon the character climbs up and
+      down at 140 px/s; against a non-`wall_tool` polygon it does not climb."
+    result: passed
+    reason:
+      text: step_climb at 140 only when wall_climbable (sim.rs:237-245, 328-335);
+        climbability from polygon_type == wall_tool; two tests.
+      truncated: false
+  - id: A20
+    source: brief.md
+    text: "A20 — Frame-rate independence: stepping the simulation with the same
+      inputs at 60 Hz and at 144 Hz produces the same trajectory within a small
+      tolerance."
+    result: passed
+    reason:
+      text: advance runs whole FIXED_DT 1/120 steps (sim.rs:209-224); test
+        trajectory_is_identical_at_60hz_and_144hz within one fixed step.
+      truncated: false
+  - id: A21
+    source: brief.md
+    text: "A21 — Camera follows: while playing, the canvas scroll follows the
+      character, and the character stays on screen when running to the right for
+      several seconds."
+    result: passed
+    reason:
+      text: follow_with_camera called every frame while playing (main.rs:1057);
+        steady-state lag ~86 px keeps the character on screen.
+      truncated: false
+  - id: A22
+    source: brief.md
+    text: A22 — Arrow keys drive the character while playing and do not scroll the
+      canvas; on Stop they scroll the canvas again.
+    result: passed
+    reason:
+      text: main.rs:1018-1021 substitutes HeldDirs::default() while playing;
+        play_input reads the arrows for the character.
+      truncated: false
+  - id: A23
+    source: specs/level-size/spec.md
+    text: Complete target behaviour of the editor's explicit level size after this
+      change is archived.
+    result: passed
+    reason:
+      text: Scope header; the capability is delivered across level_size.rs,
+        level_data.rs and main.rs. The modality gap is charged at A25.
+      truncated: false
+  - id: A24
+    source: specs/level-size/spec.md
+    text: "The level has an extent in world pixels, anchored at the top-left origin
+      (0, 0) and running to (width, height). It is resolved in this priority
+      order: the explicitly set size, else the loaded background image's size,
+      else the bounding box of all entities, else the 1920×1080 default. A size
+      is valid only when both components are finite and within 1 … 1 000 000 px;
+      anything else is refused and the previous size kept."
+    result: passed
+    reason:
+      text: level_size.rs:41-55 uses and_then(validate) at each step so an invalid
+        candidate falls through; two tests cover edges.
+      truncated: false
+  - id: A25
+    source: specs/level-size/spec.md
+    text: A `Level` menu in the menu bar carries a `Level Size…` item that opens a
+      modal dialog. The dialog pre-fills Width and Height from the currently
+      resolved size and offers OK and Cancel. OK applies a valid size and
+      closes; an invalid entry leaves the size unchanged. Cancel closes without
+      applying. The dialog is the only way to change the size in this capability
+      — there is no drag handle on the canvas.
+    result: passed
+    reason:
+      text: Level menu -> Level Size... (main.rs:1033-1040) opens a Window pre-filled
+        from the resolved size; OK applies only a valid size, Cancel closes
+        without applying (main.rs:698-760); pointer_over_panels returns true
+        whenever size_dialog.is_some() so canvas clicks are blocked and
+        F1/F5/editing keys are gated (main.rs:1109,1158); the rect persists
+        through the closing frame; no drag handle exists.
+      truncated: false
+  - id: A26
+    source: specs/level-size/spec.md
+    text: The level boundary is drawn on the canvas as a thin outline from world (0,
+      0) to (width, height), offset by the shared scroll pixel offset like every
+      other element, so it scrolls with the level and marks the editable area.
+    result: passed
+    reason:
+      text: main.rs:1315-1321 uses the shared rounded pixel offset.
+      truncated: false
+  - id: A27
+    source: specs/level-size/spec.md
+    text: The minimap computes its thumbnail area and viewport rectangle against the
+      resolved level size.
+    result: passed
+    reason:
+      text: main.rs:1659-1666 drives thumbnail and viewport scale from the resolved
+        extent.
+      truncated: false
+  - id: A28
+    source: specs/level-size/spec.md
+    text: The size does **not** clamp scrolling. The canvas still scrolls
+      arbitrarily far right and down, and entities may still be placed beyond
+      the boundary, preserving the behaviour confirmed in the
+      two-axis-smooth-scrolling change; the boundary is a marker, and the level
+      can be grown afterwards to take in what was placed outside it.
+    result: passed
+    reason:
+      text: No clamp added; boundary is draw-only.
+      truncated: false
+  - id: A29
+    source: specs/level-size/spec.md
+    text: "`LevelData` carries `level_size: Option<[f32; 2]>`, serialised on save
+      when a size has been set and read back on load. The field is optional with
+      a serde default, so a level file written before this change loads
+      unchanged and without error, falling back through the resolution order
+      above."
+    result: passed
+    reason:
+      text: "level_data.rs:19-21 #[serde(default)] Option<[f32;2]>. Minor: no
+        skip_serializing_if, so level_size: null is written when unset (same
+        convention as background_size)."
+      truncated: false
+  - id: A30
+    source: specs/level-size/spec.md
+    text: Consumers of the level JSON outside this editor must read the height from
+      `level_size` rather than assuming a fixed viewport height. The Bevy game
+      at `/Users/arikha/bevy_prince_platformer` currently flips editor Y with
+      the hard-coded constant `LEVEL_JSON_VIEWPORT_HEIGHT = 720.0` in
+      `src/game/config.rs`, so any level whose height is not 720 will be
+      vertically offset there until that constant is replaced by the value from
+      the file. Making that change in the game is out of scope for this
+      capability; writing the field correctly is not.
+    result: passed
+    reason:
+      text: Documented in level_data.rs:14-21 and game_config.rs:16-19; the bevy repo
+        is untouched by this change.
+      truncated: false
+  - id: A31
+    source: specs/level-size/spec.md
+    text: A1 — `Level → Level Size…` opens a dialog pre-filled from the current
+      size; OK applies new values, Cancel leaves them unchanged.
+    result: passed
+    reason:
+      text: Same wiring as A1. Non-modality charged at A25.
+      truncated: false
+  - id: A32
+    source: specs/level-size/spec.md
+    text: A2 — Resolution order is explicit size, then background size, then entity
+      bounding box, then 1920×1080.
+    result: passed
+    reason:
+      text: resolve + resolved_level_size + entity_bounds (main.rs:508-530); asserted
+        by the resolution-order test.
+      truncated: false
+  - id: A33
+    source: specs/level-size/spec.md
+    text: A3 — `level_size` round-trips through save and load, and a file lacking
+      the field loads unchanged.
+    result: passed
+    reason:
+      text: "Same evidence as A3: round-trip test at level_data.rs:67 and
+        missing-field test at level_data.rs:82."
+      truncated: false
+  - id: A34
+    source: specs/level-size/spec.md
+    text: A4 — A boundary outline is drawn from (0,0) to (width, height) and scrolls
+      with the level.
+    result: passed
+    reason:
+      text: boundary_rect is Rect::from_min_size(Pos2::ZERO, size)
+        (level_size.rs:58-60) with its own test.
+      truncated: false
+  - id: A35
+    source: specs/level-size/spec.md
+    text: A5 — The minimap uses the resolved level size as its extent.
+    result: passed
+    reason:
+      text: main.rs:1659-1666 replaces the raw background size with the resolved size.
+      truncated: false
+  - id: A36
+    source: specs/level-size/spec.md
+    text: A6 — Non-finite, zero, negative or above-1 000 000 values are refused and
+      the previous size kept.
+    result: passed
+    reason:
+      text: validate refuses all listed cases; load also drops an invalid persisted
+        value (main.rs:476).
+      truncated: false
+  - id: A37
+    source: specs/level-size/spec.md
+    text: A7 — Scrolling and entity placement remain unbounded beyond the boundary.
+    result: passed
+    reason:
+      text: Scroll unbounded (scroll.rs:80-83); placement unchecked.
+      truncated: false
+  - id: A38
+    source: specs/play-simulation/spec.md
+    text: Complete target behaviour of the editor's in-editor play mode after this
+      change is archived.
+    result: passed
+    reason:
+      text: Scope header; non-destructiveness judged at A42.
+      truncated: false
+  - id: A39
+    source: specs/play-simulation/spec.md
+    text: Play mode drops a controllable character into the level currently being
+      edited so its geometry can be tested without exporting to the game.
+      Movement reproduces the platformer at
+      `/Users/arikha/bevy_prince_platformer`, whose character is a `bevy-tnua`
+      0.31 floating controller on `bevy_rapier2d` 0.33. That controller is a
+      Bevy-ECS physics plugin and cannot run inside an egui application, so the
+      behaviour here is an independent kinematic reimplementation driven by that
+      project's own tuning constants, transcribed from `src/game/config.rs` with
+      their original names and cited source. Trajectories are close to the
+      game's, not bit-identical; the constants are exact.
+    result: passed
+    reason:
+      text: "I diffed every transcribed constant against the game's config.rs: GRAVITY
+        1400, capsule 20/25, run 600/4500/3200, coyote 0.12, free-fall 500, fast
+        fall 1.8, max fall 950, jump 365/9000/900, buffer 0.1, air jumps 0, dash
+        1500/450/0.4/1/0.1, wall sensor radius+10, wall slide 110, wall jump
+        190/170/0.18, wall coyote 0.1, climb 140/60, camera 7/5/2.5/400/40/80,
+        viewport 720 - all exact."
+      truncated: false
+  - id: A40
+    source: specs/play-simulation/spec.md
+    text: A `Play` menu carries a `Play / Stop` item, and `F5` is its shortcut;
+      either toggles play mode. Entering spawns the character; leaving removes
+      it and returns the editor to the tool, selection and input handling it had
+      before. `R` respawns the character at the spawn point. Toggles are ignored
+      while a text field wants keyboard input.
+    result: passed
+    reason:
+      text: Play menu (main.rs:994-999) and F5 (1066-1068) both call toggle_play;
+        start_play/stop_play spawn and remove the character and restore tool +
+        current_tool_name; R respawns (1069-1073). F5 and R sit inside
+        !ctx.wants_keyboard_input() (main.rs:1058).
+      truncated: false
+  - id: A41
+    source: specs/play-simulation/spec.md
+    text: The spawn point is the last canvas click position in world coordinates, or
+      (100, 100) when nothing has been clicked. A left click during play moves
+      the spawn point and respawns there rather than acting on the level.
+    result: passed
+    reason:
+      text: "start_play: last_click_pos or (100,100) (main.rs:599-602); canvas click
+        during play only sets play_spawn/last_click_pos and respawn_at
+        (main.rs:1507-1515), never falling into the tool match; the Play menu
+        click is absorbed by the ui_consumed_click latch."
+      truncated: false
+  - id: A42
+    source: specs/play-simulation/spec.md
+    text: Play mode never modifies the level. While playing, entity placement,
+      selection, dragging, deletion and polygon vertex editing are all disabled;
+      no code path calls `save_state()`; the entity list is unchanged across a
+      play session; and `has_unsaved_changes()` is unaffected by entering,
+      playing or leaving. Play state is never serialised into the level file.
+    result: passed
+    reason:
+      text: "Audited every save_state() call site
+        (main.rs:1163,1235,1332,1360,1522,1553,1650,1711 and
+        load_level_from_path): each is gated by editing, play.is_none(), cleared
+        drag flags, or the disabled Load Level item; LevelData carries no play
+        fields; start_play/stop_play do not touch entities, level_size or
+        last_save_hash, via menu or F5."
+      truncated: false
+  - id: A43
+    source: specs/play-simulation/spec.md
+    text: "Collision is taken from the level's polygon entities, mirroring
+      `world_objects::spawn_polygon_collider` in the game: every polygon entity
+      is solid, and a polygon whose type is `wall_tool` is additionally
+      climbable. The game builds each polygon as a `Collider::convex_hull`, so a
+      concave polygon drawn in the editor collides as its convex hull here too.
+      Bitmap entities are not solid — the game gives them their own behaviour
+      (orcs, coins, death pits), which is out of scope."
+    result: passed
+    reason:
+      text: collision_world (main.rs:540-551) matches level1.rs:130 and
+        world_objects.rs:35; CollisionPoly::new runs a monotone-chain hull
+        mirroring Collider::convex_hull; bitmaps excluded.
+      truncated: false
+  - id: A44
+    source: specs/play-simulation/spec.md
+    text: The character is a capsule with `PLAYER_CAPSULE_HALF_HEIGHT` 20 and
+      `PLAYER_CAPSULE_RADIUS` 25, drawn as a plain shape with no sprite or
+      animation. It never tunnels through a polygon, including at maximum fall
+      speed.
+    result: passed
+    reason:
+      text: draw_play uses the 20/25 capsule with no sprite; collision uses the same
+        capsule; sub-step cap prevents tunnelling.
+      truncated: false
+  - id: A45
+    source: specs/play-simulation/spec.md
+    text: "The simulation works directly in the editor's world space: top-left
+      origin, Y increasing downward. Gravity is +Y and jumping is −Y. No Y-flip
+      is introduced; the flip belongs to the game's importer."
+    result: passed
+    reason:
+      text: sim.rs:12-13 states the convention; gravity adds to +vel.y, jumps set
+        -jump_speed, no Y flip anywhere.
+      truncated: false
+  - id: A46
+    source: specs/play-simulation/spec.md
+    text: All values below are the game's constants.
+    result: passed
+    reason:
+      text: Every value resolves to a game_config constant, each diffed against the
+        game (see A39).
+      truncated: false
+  - id: A47
+    source: specs/play-simulation/spec.md
+    text: "| Ability | Behaviour |"
+    result: passed
+    reason:
+      text: Table header; each ability is a distinct branch of Simulation::step
+        (sim.rs:226-259).
+      truncated: false
+  - id: A48
+    source: specs/play-simulation/spec.md
+    text: "| Run | Horizontal speed saturates at `PLAYER_RUN_SPEED` 600 px/s,
+      accelerating at `PLAYER_GROUND_ACCEL` 4500 px/s² on the ground and
+      `PLAYER_AIR_ACCEL` 3200 px/s² in the air. |"
+    result: passed
+    reason:
+      text: step_horizontal picks 4500 or 3200 by grounded and saturates at 600.
+      truncated: false
+  - id: A49
+    source: specs/play-simulation/spec.md
+    text: "| Jump | A full-hold jump reaches `JUMP_HEIGHT` 365 px above the standing
+      height. Releasing while rising applies `JUMP_SHORTEN_EXTRA_GRAVITY` for a
+      lower hop; after the apex `JUMP_FALL_EXTRA_GRAVITY` speeds the descent.
+      `MAX_AIR_JUMPS` is 0. |"
+    result: passed
+    reason:
+      text: sim.rs:387-396 and 399-410; no air-jump path exists, matching
+        MAX_AIR_JUMPS 0.
+      truncated: false
+  - id: A50
+    source: specs/play-simulation/spec.md
+    text: "| Coyote and buffer | A jump is allowed up to `COYOTE_TIME` 0.12 s after
+      leaving the ground, and a press up to `JUMP_BUFFER_TIME` 0.1 s before
+      landing fires on landing. |"
+    result: passed
+    reason:
+      text: Coyote 0.12 and buffer 0.1 implemented correctly; the coyote test probes
+        0.06 s and 0.17 s rather than the boundary itself.
+      truncated: false
+  - id: A51
+    source: specs/play-simulation/spec.md
+    text: "| Gravity and fall | Base `GRAVITY` 1400 px/s², plus
+      `PLAYER_FREE_FALL_EXTRA_GRAVITY` while free-falling. Holding down
+      multiplies gravity by `FAST_FALL_GRAVITY_MULT` 1.8. Downward speed never
+      exceeds `MAX_FALL_SPEED` 950 px/s. |"
+    result: passed
+    reason:
+      text: "sim.rs:399-426: 1400 base, +500 free fall, x1.8 fast fall, clamped to
+        950."
+      truncated: false
+  - id: A52
+    source: specs/play-simulation/spec.md
+    text: "| Dash | `DASH_SPEED` 1500 px/s covering `DASH_DISTANCE` 450 px, then
+      braking to `DASH_BRAKE_TO_SPEED`. `DASH_COOLDOWN` 0.4 s between dashes,
+      `MAX_AIR_DASHES` 1 per airtime reset by landing, and a press is remembered
+      for `DASH_BUFFER_TIME` 0.1 s. |"
+    result: passed
+    reason:
+      text: sim.rs:279-325 plus the landing reset (sim.rs:490-493) and 0.1 buffer;
+        four dash tests.
+      truncated: false
+  - id: A53
+    source: specs/play-simulation/spec.md
+    text: "| Wall slide | Against a wall, descent is capped at
+      `WALL_SLIDE_MAX_FALL_SPEED` 110 px/s. |"
+    result: passed
+    reason:
+      text: sim.rs:419-426 substitutes 110 while wall_dir != 0 and descending; test
+        also asserts State::WallSliding.
+      truncated: false
+  - id: A54
+    source: specs/play-simulation/spec.md
+    text: "| Wall jump | Rises `WALL_JUMP_HEIGHT` 190 px and carries
+      `WALL_JUMP_HORIZONTAL_DISTANCE` 170 px away from the wall; horizontal
+      input is ignored for `WALL_JUMP_INPUT_LOCK` 0.18 s, and the jump is still
+      allowed `WALL_COYOTE_TIME` 0.1 s after leaving the wall. |"
+    result: passed
+    reason:
+      text: sim.rs:369-384 derives the wall jump from 190 and 170, sets the 0.18 lock,
+        and accepts the jump within WALL_COYOTE_TIME 0.1 (wall_coyote_left,
+        sim.rs:361-364, 459-462). Tests at sim.rs:1017, 1049 and
+        wall_coyote_allows_a_wall_jump_just_after_leaving_the_wall (sim.rs:894).
+      truncated: false
+  - id: A55
+    source: specs/play-simulation/spec.md
+    text: "| Climb | On a `wall_tool` polygon only, the character clings and moves
+      up or down at `CLIMB_SPEED` 140 px/s, drifting into the wall at
+      `CLIMB_WALL_DRIFT` 60 px/s. A non-`wall_tool` polygon cannot be climbed.
+      |"
+    result: passed
+    reason:
+      text: step_climb sets (wall_dir*60, axis_y*140) with no gravity and runs only
+        when wall_climbable; two tests.
+      truncated: false
+  - id: A56
+    source: specs/play-simulation/spec.md
+    text: "Bindings match the game's `PlayerBindings` defaults: move left `A` or
+      `←`, move right `D` or `→`, look up `W` or `↑`, look down `S` or `↓`, jump
+      `Space` or `Z`, dash `Shift`, `K` or `C`. While play mode is active the
+      arrow keys drive the character and do not scroll the canvas; on Stop they
+      scroll the canvas again."
+    result: passed
+    reason:
+      text: play_input matches PlayerBindings::default (input.rs:32-44) exactly;
+        arrows withheld while playing and restored on Stop.
+      truncated: false
+  - id: A57
+    source: specs/play-simulation/spec.md
+    text: While playing, the canvas scroll follows the character using the game's
+      camera constants — `CAMERA_FOLLOW_RATE_X` 7 and `CAMERA_FOLLOW_RATE_Y` 5
+      as per-second exponential smoothing rates, a `CAMERA_DEAD_ZONE_X` of 40
+      px, `CAMERA_OFFSET_Y` 80, and a `CAMERA_FALL_CATCHUP_MULT` of 2.5 once
+      descent exceeds `CAMERA_FALL_SPEED_THRESHOLD` 400 px/s. The character
+      stays on screen while running.
+    result: passed
+    reason:
+      text: "follow_with_camera uses CAMERA_FOLLOW_RATE_X/Y as 1-exp(-rate*dt), a 40px
+        dead zone, subtracts CAMERA_OFFSET_Y (correct: the game's goal_y =
+        player.y+80 in Y-up puts the player below centre, which in Y-down is
+        pos.y-80), and applies CAMERA_FALL_CATCHUP_MULT when vy > 400
+        (main.rs:647-669)."
+      truncated: false
+  - id: A58
+    source: specs/play-simulation/spec.md
+    text: The simulation advances on a fixed timestep of 1/120 s driven by an
+      accumulator, so the same inputs produce the same trajectory regardless of
+      display refresh rate. The editor repaints every frame while play mode is
+      active.
+    result: passed
+    reason:
+      text: FIXED_DT 1/120 with accumulator bounded by MAX_STEPS_PER_FRAME 8;
+        request_repaint every frame while playing; two tests.
+      truncated: false
+  - id: A59
+    source: specs/play-simulation/spec.md
+    text: A small overlay shows the character's world position, whether it is
+      grounded, and the current state — run, air, dash, wall slide or climb.
+    result: passed
+    reason:
+      text: main.rs:1641-1656 paints pos, grounded/airborne and state.label() (test
+        state_labels_are_stable).
+      truncated: false
+  - id: A60
+    source: specs/play-simulation/spec.md
+    text: The simulation is a pure module with no egui `Context` or `Ui` dependency,
+      advanced by an explicit `dt`, so constants and trajectories are
+      unit-testable headlessly. `main.rs` owns the play-mode flag, spawn point,
+      input capture, drawing and camera.
+    result: passed
+    reason:
+      text: sim.rs imports only egui::{Pos2, Vec2}; play flag, spawn, keys, drawing
+        and camera live in main.rs; 27 headless tests.
+      truncated: false
+  - id: A61
+    source: specs/play-simulation/spec.md
+    text: A8 — `Play → Play / Stop` and `F5` each toggle play mode.
+    result: passed
+    reason:
+      text: main.rs:965-970 and 1036-1038 both call toggle_play.
+      truncated: false
+  - id: A62
+    source: specs/play-simulation/spec.md
+    text: A9 — Spawn is the last click or (100, 100); `R` respawns; a click during
+      play moves the spawn.
+    result: passed
+    reason:
+      text: "Same as A9/A41: menu and F5 entry both spawn at the last canvas click; R
+        respawns; an in-play click moves the spawn."
+      truncated: false
+  - id: A63
+    source: specs/play-simulation/spec.md
+    text: A10 — Play never modifies the level and never affects
+      `has_unsaved_changes()`.
+    result: passed
+    reason:
+      text: "Same as A10/A42: entering, playing and leaving by menu or F5 leave
+        entities, level_size and last_save_hash untouched."
+      truncated: false
+  - id: A64
+    source: specs/play-simulation/spec.md
+    text: A11 — Stop restores the previous tool and normal editor input.
+    result: passed
+    reason:
+      text: stop_play restores the tool and clearing play re-enables every gated path
+        plus arrow scrolling.
+      truncated: false
+  - id: A65
+    source: specs/play-simulation/spec.md
+    text: A12 — Polygons are solid; the character lands on them and never tunnels.
+    result: passed
+    reason:
+      text: All polygons become solid colliders; landing and no-tunnelling tests pass.
+      truncated: false
+  - id: A66
+    source: specs/play-simulation/spec.md
+    text: A13 — Run saturates at 600 px/s, reached in about 0.13 s from rest.
+    result: passed
+    reason:
+      text: Test asserts ~600 px/s after 0.133 s within 15 px/s and saturation within
+        1 px/s.
+      truncated: false
+  - id: A67
+    source: specs/play-simulation/spec.md
+    text: A14 — A full-hold jump reaches about 365 px; an early release is
+      measurably lower.
+    result: passed
+    reason:
+      text: Tests assert 365 px +/-10% and a tap apex under 60% of full.
+      truncated: false
+  - id: A68
+    source: specs/play-simulation/spec.md
+    text: A15 — Coyote time 0.12 s and jump buffer 0.1 s both work at their
+      boundaries.
+    result: passed
+    reason:
+      text: Coyote boundary test brackets 0.12 s at +/-2 fixed steps; jump buffer
+        implemented as an exact 0.1 s countdown (sim.rs:288-290, 360) and tested
+        inside the window and well outside it.
+      truncated: false
+  - id: A69
+    source: specs/play-simulation/spec.md
+    text: A16 — Terminal velocity 950 px/s; holding down multiplies gravity by 1.8.
+    result: passed
+    reason:
+      text: Tests assert <= 950+0.5 and the 1.8 ratio within 0.05.
+      truncated: false
+  - id: A70
+    source: specs/play-simulation/spec.md
+    text: A17 — Dash covers about 450 px at up to 1500 px/s, 0.4 s cooldown, exactly
+      one air dash.
+    result: passed
+    reason:
+      text: Tests assert 450 px +/-10%, peak 1500 +/-1, the cooldown cycle, and one
+        air dash with landing reset.
+      truncated: false
+  - id: A71
+    source: specs/play-simulation/spec.md
+    text: A18 — Wall slide caps descent at 110 px/s; wall jump gives about 190 px up
+      and 170 px across with a 0.18 s input lock.
+    result: passed
+    reason:
+      text: Tests assert the 110 cap, apex ~190 within 15%, carry ~170 within 20%, and
+        vx unchanged during the lock.
+      truncated: false
+  - id: A72
+    source: specs/play-simulation/spec.md
+    text: A19 — Climb works at 140 px/s on a `wall_tool` polygon and not on a plain
+      polygon.
+    result: passed
+    reason:
+      text: Tests assert ~70 px in 0.5 s with state Climbing, descent on down, and no
+        climb on a plain polygon.
+      truncated: false
+  - id: A73
+    source: specs/play-simulation/spec.md
+    text: A20 — Identical trajectories at 60 Hz and 144 Hz.
+    result: passed
+    reason:
+      text: Test drives 2 s at both rates; the one-step tolerance is the legitimate
+        accumulator-phase bound, not a loosened assertion.
+      truncated: false
+  - id: A74
+    source: specs/play-simulation/spec.md
+    text: A21 — The camera follows the character while playing.
+    result: passed
+    reason:
+      text: main.rs:1055-1057 follows every frame and zeroes scroll momentum so
+        scroll.step cannot fight it.
+      truncated: false
+  - id: A75
+    source: specs/play-simulation/spec.md
+    text: A22 — Arrow keys drive the character while playing and scroll the canvas
+      when stopped.
+    result: passed
+    reason:
+      text: main.rs:1018-1027 feeds HeldDirs::default() while playing and reverts once
+        play is None.
+      truncated: false
+builder_handoff:
+  candidate_id: 51ee1e04-0a0a-4b1b-9fdf-17d84857a30c
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:259fbe32-a456-44c6-b841-5506fe7581d1
+  iteration: 4
+  summary:
+    text: "Iteration 4 - repairs A9/A41/A62 and A10/A42/A63 at their shared root,
+      plus two Verifier risks. ROOT CAUSE: the CentralPanel click handler acts
+      on raw pointer.primary_clicked() and previously excluded only the toolbox
+      rect and the two floating-panel rects, so the click that activates ANY
+      menu item (Play/Stop being the newly visible case) was also delivered to
+      the canvas in the same frame - on entry it moved the spawn to the menu
+      item's screen position, on exit it ran the restored tool's action there.
+      FIX, applied once for every menu rather than per item:
+      pointer_over_ui(ctx, pos) now returns true when (a) a floating panel owns
+      the point or the Level Size dialog is open (unchanged, now factored into
+      pointer_over_panels), (b) the point is inside the menu bar, whose rect is
+      captured from the TopBottomPanel's response each frame into menu_bar_rect,
+      (c) ctx.layer_id_at(pos) reports any non-Background layer - egui paints
+      dropdown menus in Order::Foreground and windows in Order::Middle, so an
+      open dropdown, the help window and the dialog are all covered generically
+      - or (d) a menu item was activated this frame. Case (d) exists because
+      egui closes the dropdown in the same frame it reports the item click, so
+      at the moment the canvas handler runs the Foreground layer is already
+      gone; every menu item's `.clicked()` branch (Background Image, Load Level,
+      Save Level, Exit, Level Size..., Play/Stop, Keyboard & Commands) therefore
+      sets a per-frame latch ui_consumed_click, reset at the start of update
+      before the bar is drawn. The canvas primary-click handler and the
+      right-click polygon finalise both use pointer_over_ui(ctx, pos); the
+      toolbox drag guard deliberately keeps the narrower pointer_over_panels,
+      because the toolbox is itself an egui Area (Order::Middle) and the layer
+      test would otherwise block dragging it. Net effect: Play and Stop via the
+      menu now behave identically to F5 - entry spawns at the last canvas click,
+      exit performs no canvas action - and the same holds for every other menu
+      item, which fixes the pre-existing class the Verifier identified rather
+      than only the two symptoms. Nothing is over-blocked: with no dropdown open
+      and the pointer over the canvas, layer_id_at returns the Background panel
+      layer and pointer_over_ui reduces to the previous rect tests. RISKS
+      CLEARED: CAMERA_OFFSET_Y sign - the game's camera.rs aims goal_y =
+      player.y + 80 in a Y-up world, i.e. the player sits 80 px BELOW screen
+      centre; in the editor's Y-down space that is a subtraction, and
+      follow_with_camera now subtracts, with a comment deriving it.
+      Unsaved-changes - compute_entities_hash now also hashes level_size, so
+      changing the level size counts as an unsaved change and Exit prompts to
+      save it; load_level_from_path and save_level both take their hash after
+      level_size is set, so a freshly loaded or saved level still reads as
+      clean, and play mode never touches level_size so A10/A42/A63 are
+      unaffected. Full acceptance list rechecked; A1-A75 all addressed."
+    truncated: false
+  addressed_acceptance_ids:
+    - A9
+    - A10
+    - A41
+    - A42
+    - A62
+    - A63
+    - A1
+    - A2
+    - A3
+    - A4
+    - A5
+    - A6
+    - A7
+    - A8
+    - A11
+    - A12
+    - A13
+    - A14
+    - A15
+    - A16
+    - A17
+    - A18
+    - A19
+    - A20
+    - A21
+    - A22
+    - A23
+    - A24
+    - A25
+    - A26
+    - A27
+    - A28
+    - A29
+    - A30
+    - A31
+    - A32
+    - A33
+    - A34
+    - A35
+    - A36
+    - A37
+    - A38
+    - A39
+    - A40
+    - A43
+    - A44
+    - A45
+    - A46
+    - A47
+    - A48
+    - A49
+    - A50
+    - A51
+    - A52
+    - A53
+    - A54
+    - A55
+    - A56
+    - A57
+    - A58
+    - A59
+    - A60
+    - A61
+    - A64
+    - A65
+    - A66
+    - A67
+    - A68
+    - A69
+    - A70
+    - A71
+    - A72
+    - A73
+    - A74
+    - A75
+  checks:
+    - name:
+        text: cargo test
+        truncated: false
+      result: passed
+      note:
+        text: 72 passed, 0 failed; no test changes this iteration (the fix is in egui
+          input routing, which has no headless test).
+        truncated: false
+    - name:
+        text: cargo build
+        truncated: false
+      result: passed
+      note:
+        text: "Warning set byte-identical to before this change: 7 pre-existing
+          f32-literal future-incompat and 3 pre-existing dead-code."
+        truncated: false
+    - name:
+        text: smoke run
+        truncated: false
+      result: passed
+      note:
+        text: Launched and stayed alive 6 s with no panic after the repairs.
+        truncated: false
+    - name:
+        text: interactive menu / play session
+        truncated: false
+      result: not-run
+      note:
+        text: "Clicking Play/Stop in a live window over a canvas entity is not
+          automatable here. The fix is inspectable: every menu item branch sets
+          ui_consumed_click, menu_bar_rect is assigned right after the bar is
+          shown, and pointer_over_ui is the single guard read by both canvas
+          click sites."
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: A click that lands on the canvas while a dropdown is open closes the
+        dropdown (egui behaviour) and, because that point is on the Background
+        layer, still reaches the canvas. That is egui's normal
+        click-outside-to-close semantics and was not among the acceptance items;
+        it does not affect Play/Stop, whose activating clicks are always inside
+        the dropdown.
+      truncated: false
+    - text: The layer test relies on egui's layer bookkeeping for the current frame; a
+        window shown for the first time in a frame is registered by the time the
+        CentralPanel runs, since the menu bar, help window and dialog are all
+        drawn before it in update.
+      truncated: false
+    - text: There is still no automated test for the input-routing paths (play gating,
+        dialog persistence, menu fall-through) - all verified by inspection.
+      truncated: false
+    - text: help.rs's fourth section is headed 'Menus' and lists all four menus;
+        accurate for the editor but it diverges from the archived
+        editor-help-screen spec's 'File menu' table, which the user has been
+        told needs amending.
+      truncated: false
+    - text: level_size still writes null when unset (kept for consistency with
+        background_size). The minimap stretches the background thumbnail to the
+        resolved level size. Jump/wall-jump launch velocities remain derivations
+        rather than ports; air dash is not reset by a wall slide as in the game.
+      truncated: false
+    - text: The Bevy game is untouched; its LEVEL_JSON_VIEWPORT_HEIGHT = 720 must be
+        replaced by the level's height for levels that are not 720 tall.
+        README.md remains stale.
+      truncated: false
+  known_limits_truncated: false
+  submitted_at: 2026-09-12T09:54:01.818Z
+blockers: []
+verification:
+  candidate_id: 51ee1e04-0a0a-4b1b-9fdf-17d84857a30c
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:d6ded8a7-eb97-4a0f-9187-d73f62fc8d55
+  iteration: 4
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: pass
+  checks:
+    - id: cargo-build
+      name:
+        text: cargo build
+        truncated: false
+      argv_display:
+        - text: build
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 396
+    - id: cargo-test
+      name:
+        text: cargo test
+        truncated: false
+      argv_display:
+        - text: test
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 268
+  summary:
+    text: "Traced the frame order in update: ui_consumed_click is reset before the
+      menu bar is drawn, set inside every menu item's clicked() branch
+      (including Play/Stop and the add_enabled Load Level), and read by both
+      canvas click sites in the CentralPanel that runs last, so a menu-item
+      click can no longer reach the canvas regardless of egui closing the
+      dropdown in the same frame; the layer test additionally covers clicks
+      inside an open dropdown, and menu_bar_rect covers the bar itself. Nothing
+      is over-blocked: canvas clicks see the Background layer, the toolbox click
+      path is unchanged, and the toolbox drag guard uses pointer_over_panels
+      only. A from-scratch audit of every entities mutation and save_state()
+      call confirms each is gated, and enter/exit via menu or F5 leave entities,
+      level_size and last_save_hash untouched. All transcribed constants, the
+      wall_tool climbable rule and the key bindings match the game; the
+      CAMERA_OFFSET_Y subtraction is the correct Y-down translation of the
+      game's Y-up +80. Physics tests assert what their items claim; the help
+      window's 'Menus' heading is accurate but diverges from the archived
+      help-screen spec."
+    truncated: false
+  risks:
+    - text: Save Level and Level Size... remain reachable from the menu while playing;
+        both are explicit user actions, but Save changes last_save_hash and a
+        size change alters the unsaved hash during a play session.
+      truncated: false
+    - text: Jump-buffer test checks 0.07 s and 0.3 s leads, not the 0.1 s edge;
+        wall-jump apex/carry tolerances are 15%/20%; the input-lock test covers
+        only half the lock window.
+      truncated: false
+    - text: A click on the canvas while a dropdown is open closes the dropdown and
+        still reaches the canvas (pre-existing egui click-outside semantics, not
+        covered by acceptance).
+      truncated: false
+    - text: The toolbox Area (Order::Middle, 4px frame margin) now also satisfies
+        pointer_over_ui, so a ~4px rim around the toolbox no longer passes
+        clicks to the canvas; toolbox drag uses pointer_over_panels only, so
+        dragging is unaffected.
+      truncated: false
+    - text: help.rs now heads its fourth section 'Menus' with seven
+        File/Level/Play/Help items; accurate for the editor but it contradicts
+        the archived editor-help-screen spec ('File menu' heading, four items,
+        A9), which needs amending.
+      truncated: false
+    - text: level_size is written as null when unset; the minimap stretches the
+        background thumbnail to the resolved level size when aspect ratios
+        differ.
+      truncated: false
+    - text: Camera dead zone is applied to the follow delta rather than to an anchor
+        as in the game; air dash is not reset by a wall slide as in the game;
+        play_input does not exclude Cmd-modified keys.
+      truncated: false
+    - text: The Level Size dialog is modal for the canvas and shortcuts but menus and
+        toolbox tool selection still respond while it is open.
+      truncated: false
+  risks_truncated: false
+  completed_at: 2026-09-12T10:02:22.987Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A10
+      - A25
+      - A42
+      - A63
+    summary:
+      text: "Both capabilities are substantially built and the numeric fidelity is
+        genuinely good: every constant in src/game_config.rs matches the game's
+        config.rs exactly, the climbable rule matches level1.rs:130 plus
+        world_objects::spawn_polygon_collider, and the key bindings match
+        PlayerBindings::default. src/level_size.rs and src/sim.rs are genuinely
+        pure and carry 32 headless tests asserting the acceptance numbers rather
+        than weakened stand-ins. The change fails on non-destructiveness: the
+        play gate was applied to the canvas click handler and the drag paths but
+        not to the Enter/Delete/Cmd+Z keyboard handlers, the right-click polygon
+        finalise, or the File menu, so while playing a right click can push a
+        new polygon entity and Load Level can replace the whole entity list,
+        each after a save_state() - breaking A10, A42 and A63. It also fails
+        A25: the Level Size dialog is not modal and its rect is not excluded
+        from the canvas click handler, so pressing OK also acts on the canvas
+        beneath it."
+      truncated: false
+    completed_at: 2026-09-12T09:23:15.295Z
+  - goal_cycle: 1
+    iteration: 2
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A25
+    summary:
+      text: "All 75 items judged independently against the code and the game's own
+        sources. The physics module is solid: every constant in
+        src/game_config.rs matches the game's config.rs exactly, the climbable
+        rule matches level1.rs:130 and world_objects.rs:49, the PlayerBindings
+        mapping matches input.rs:32-44, and the 30 headless tests genuinely
+        assert their acceptance items. Non-destructiveness is fully repaired:
+        every keyboard handler, both click handlers, drag start/continue/release
+        and every menu item were traced and none can mutate entities, call
+        save_state() or write last_save_hash while play is Some; start_play
+        drops in-flight drags; nothing is over-blocked when play is stopped. The
+        dialog fix is only half complete: text-field clicks are absorbed, but
+        main.rs:718 clears size_dialog_rect in the same frame as the OK/Cancel/X
+        click, so that click still reaches the canvas handler and, with a bitmap
+        or erase tool selected, places or deletes an entity behind the dialog;
+        the dialog is also a plain non-modal window despite the spec calling it
+        modal. That is the single failing item, A25."
+      truncated: false
+    completed_at: 2026-09-12T09:39:08.640Z
+  - goal_cycle: 1
+    iteration: 3
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A9
+      - A10
+      - A41
+      - A42
+      - A62
+      - A63
+    summary:
+      text: "The level-size capability is complete: model, validation, persistence,
+        boundary, minimap and the dialog are all wired, and an independent
+        frame-order trace confirms the previous A25 defect is fixed (rect kept
+        through the closing frame; full modality while open; no over-blocking
+        after close), with the help window's close button fixed the same way.
+        The simulation module reproduces every transcribed constant exactly, the
+        climbable rule and key bindings match the game, and the physics tests
+        assert what their items claim. Non-destructiveness holds for the whole
+        time play is Some and entering play cannot leave a committing drag. The
+        failure is at the menu entry/exit points: the raw canvas click handler
+        also receives the Play-menu click, so Play via the menu spawns at the
+        menu item's position instead of the last canvas click (A9/A41/A62), and
+        Stop via the menu executes the restored tool's canvas action in the same
+        frame, which can add or delete an entity and flip has_unsaved_changes()
+        (A10/A42/A63). The F5 path is clean; the defect is the same fall-through
+        class as the previous A25 finding."
+      truncated: false
+    completed_at: 2026-09-12T09:52:11.953Z
+  - goal_cycle: 1
+    iteration: 4
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: "Traced the frame order in update: ui_consumed_click is reset before the
+        menu bar is drawn, set inside every menu item's clicked() branch
+        (including Play/Stop and the add_enabled Load Level), and read by both
+        canvas click sites in the CentralPanel that runs last, so a menu-item
+        click can no longer reach the canvas regardless of egui closing the
+        dropdown in the same frame; the layer test additionally covers clicks
+        inside an open dropdown, and menu_bar_rect covers the bar itself.
+        Nothing is over-blocked: canvas clicks see the Background layer, the
+        toolbox click path is unchanged, and the toolbox drag guard uses
+        pointer_over_panels only. A from-scratch audit of every entities
+        mutation and save_state() call confirms each is gated, and enter/exit
+        via menu or F5 leave entities, level_size and last_save_hash untouched.
+        All transcribed constants, the wall_tool climbable rule and the key
+        bindings match the game; the CAMERA_OFFSET_Y subtraction is the correct
+        Y-down translation of the game's Y-up +80. Physics tests assert what
+        their items claim; the help window's 'Menus' heading is accurate but
+        diverges from the archived help-screen spec."
+      truncated: false
+    completed_at: 2026-09-12T10:02:22.987Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: true
+created_at: 2026-09-12T08:26:08.655Z

@@ -1,6 +1,8 @@
 # Editor help screen
 
-Complete target behaviour of the in-app help screen after this change is archived.
+Complete target behaviour of the in-app help screen.
+
+> Amended 2026-09-12 by the level-size-and-play-simulation change: the Keyboard section gained the play-mode keys, the Mouse section a play-mode click row, and the former four-item "File menu" section became a "Menus" section covering the File, Level, Play and Help menus. The help's guarantee — it lists every key and command the editor handles — is unchanged.
 
 ## Opening and closing
 
@@ -14,7 +16,7 @@ Complete target behaviour of the in-app help screen after this change is archive
 
 - A floating `egui::Window` titled `Keyboard & Commands`, draggable and resizable, non-modal: while it is open the canvas, toolbox, menus, arrow-key scrolling and every other command keep working; only clicks inside the window are captured by it.
 - The body is a vertical `ScrollArea` with a bounded maximum height (≈ 70% of the screen height) so the whole window remains on screen at the editor's minimum size of 800×720 and long content is scrolled rather than clipped.
-- Sections appear in this order with a heading each: **Keyboard**, **Mouse**, **Tools**, **File menu**. Each entry is a two-column row: the key / gesture / tool on the left, its effect on the right.
+- Sections appear in this order with a heading each: **Keyboard**, **Mouse**, **Tools**, **Menus**. Each entry is a two-column row: the key / gesture / tool on the left, its effect on the right.
 
 ## Keyboard section
 
@@ -29,6 +31,12 @@ Lists every key the input handler responds to, and nothing else:
 | Undo | Undo the last change. |
 | Redo | Redo the last undone change. |
 | F1 / ? | Show or hide this help. |
+| F5 | Start or stop play mode. |
+| R | Respawn the character at the spawn point (play mode). |
+| A / D or ← / → | Move the character left and right (play mode). |
+| W / S or ↑ / ↓ | Look up and down; down also fast-falls and climbs down (play mode). |
+| Space or Z | Jump, and wall jump off a wall (play mode). |
+| Shift, K or C | Dash (play mode). |
 
 - Undo / Redo labels are produced by `egui::Context::format_shortcut` for `Cmd+Z` and `Shift+Cmd+Z` (`Modifiers::COMMAND`, `Modifiers::COMMAND | Modifiers::SHIFT`), so macOS shows ⌘Z / ⇧⌘Z and other platforms show Ctrl+Z / Shift+Ctrl+Z.
 
@@ -36,6 +44,7 @@ Lists every key the input handler responds to, and nothing else:
 
 | Gesture | Effect |
 | --- | --- |
+| Left click (play mode) | Move the spawn point and respawn the character there. The level is never changed while playing. |
 | Left click — Select tool | Select the entity under the cursor; drag to move it. Click empty canvas to deselect. |
 | Left click — Delete tool | Remove the entity under the cursor. |
 | Left click — polygon tools | Add a vertex at the cursor. |
@@ -53,14 +62,19 @@ Lists every key the input handler responds to, and nothing else:
 - A tool of kind `tool` whose name is neither `select_tool` nor `delete_tool` is not implemented by the editor (it currently falls through to Select); its entry ends with **"— not yet implemented"**. This is derived from the same rule the editor uses to map tool names to modes, not from a hand-maintained list.
 - If the toolbox layout failed to load, the section shows a single line saying the toolbox could not be loaded, rather than being empty.
 
-## File menu section
+## Menus section
+
+Lists every item in every menu, prefixed by its menu name:
 
 | Item | Effect |
 | --- | --- |
-| Background Image | Choose a PNG to show behind the level. |
-| Load Level | Open a level JSON file. |
-| Save Level | Write the level JSON file. |
-| Exit | Quit; asks whether to save first when there are unsaved changes. |
+| File → Background Image | Choose a PNG to show behind the level. |
+| File → Load Level | Open a level JSON file. |
+| File → Save Level | Write the level JSON file. |
+| File → Exit | Quit; asks whether to save first when there are unsaved changes. |
+| Level → Level Size… | Set the level's width and height in pixels; saved with the level. |
+| Play → Play / Stop | Start or stop play mode (same as F5). |
+| Help → Keyboard & Commands | Show this window. |
 
 ## Structure
 
@@ -73,10 +87,10 @@ Lists every key the input handler responds to, and nothing else:
 - A2 — `F1` and `?` each toggle the help window.
 - A3 — With help open, `Escape` closes it and does not cancel a polygon / edit mode; with help closed, `Escape` behaves as before.
 - A4 — The window is closable, draggable and non-modal; arrow-key scrolling and canvas clicks keep working while it is open.
-- A5 — Keyboard section lists Arrow keys, Enter, Escape, Delete/Backspace, Undo, Redo, F1 / ? and nothing the editor does not handle.
+- A5 — Keyboard section lists every key the editor handles — Arrow keys, Enter, Escape, Delete/Backspace, Undo, Redo, F1 / ?, F5, R and the play-mode movement keys — and nothing the editor does not handle.
 - A6 — Undo/Redo labels come from `format_shortcut` (⌘ on macOS, Ctrl elsewhere).
 - A7 — Mouse section covers left click per tool, both double-click meanings, right-click, entity / vertex / toolbox drag, and click-outside-to-exit-edit.
 - A8 — Tools section lists every `toolboxes.json` tool exactly once with description and kind; `add_point_tool` / `remove_point_tool` flagged "not yet implemented"; `select_tool` / `delete_tool` not flagged.
-- A9 — File section lists the four menu items, noting Exit's unsaved-changes prompt.
+- A9 — Menus section lists every item of the File, Level, Play and Help menus, noting Exit's unsaved-changes prompt.
 - A10 — Body is in a bounded vertical `ScrollArea`; window fits at 800×720.
 - A11 — Help state is view-only: not serialised, no effect on unsaved-changes.
