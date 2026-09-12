@@ -1,5 +1,7 @@
 # Canvas scrolling
 
+> Amended 2026-09-12 by the play-camera-containment change: the non-negative offset invariant holds **while editing**. Play mode's camera owns the offset and may take it negative so the character stays on screen; see the `play-camera` capability.
+
 Complete target behaviour of the level-editor canvas viewport after this change is archived.
 
 ## Coordinate model
@@ -7,7 +9,7 @@ Complete target behaviour of the level-editor canvas viewport after this change 
 - The canvas shows a level in world coordinates anchored at the top-left origin (0, 0), Y-down. This matches egui's convention; the Bevy integration flips Y against `background_height` on import.
 - The viewport is described by `scroll_offset: Vec2` — the world position visible at the top-left corner of the central canvas panel.
 - `screen = world − round(scroll_offset)` and `world = screen + scroll_offset`.
-- `scroll_offset.x ≥ 0` and `scroll_offset.y ≥ 0` always. There is **no** upper bound on either axis: the user can scroll arbitrarily far right or down to place entities beyond the background image or beyond any existing entity.
+- While editing, `scroll_offset.x ≥ 0` and `scroll_offset.y ≥ 0`. There is **no** upper bound on either axis: the user can scroll arbitrarily far right or down to place entities beyond the background image or beyond any existing entity. While play mode is running the camera owns the offset and may take it negative, so a character at negative world coordinates stays on screen; `ScrollModel` is not stepped then, and its own origin clamp is unchanged.
 
 ## Input
 
@@ -59,7 +61,7 @@ The scroll model is a pure struct independent of egui, advanced once per frame w
 - A1 — Holding `ArrowDown` increases `scroll_offset.y` and moves background and entities upward on screen; `ArrowUp` reverses.
 - A2 — Holding `ArrowRight` / `ArrowLeft` increases / decreases `scroll_offset.x` exactly as before.
 - A3 — Scrolling continues past the background's right/bottom edges and past all entities, with a 25600×720 background and with no background at all; a bitmap placed in that space receives a world position beyond those extents.
-- A4 — `scroll_offset` components are never negative; momentum toward the origin stops exactly at 0.
+- A4 — While editing, `scroll_offset` components are never negative; momentum toward the origin stops exactly at 0. (Play mode's camera is the stated exception.)
 - A5 — A repaint is requested every frame while a key is held or velocity is non-zero.
 - A6 — After release, velocity decays to exactly zero within 1.5 s and never re-accelerates on its own.
 - A7 — Background and entities use one shared rounded integer-pixel offset per frame.

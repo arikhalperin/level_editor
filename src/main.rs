@@ -15,6 +15,8 @@ use background::BackgroundImageController;
 mod scroll;
 use scroll::{HeldDirs, ScrollModel};
 
+mod camera;
+
 mod help;
 use help::{escape_action, escape_closes_help, EscapeAction, HelpContent};
 
@@ -107,6 +109,9 @@ struct EditorState {
     play_spawn: Option<Pos2>,
     /// Tool and tool name to restore when play mode ends.
     tool_before_play: Option<(Tool, Option<String>)>,
+    /// The editor's scroll state when play began, restored when play ends so testing a
+    /// level does not leave the canvas parked wherever the character finished.
+    view_before_play: Option<ScrollModel>,
     /// Whether the combat debug view (slash hitbox, orc ranges) is drawn. Off by default.
     combat_debug: bool,
 }
@@ -162,6 +167,7 @@ impl Default for EditorState {
             play: None,
             play_spawn: None,
             tool_before_play: None,
+            view_before_play: None,
             combat_debug: false,
         };
         
@@ -622,6 +628,7 @@ impl EditorState {
             .unwrap_or(Pos2::new(100.0, 100.0));
         self.play_spawn = Some(spawn);
         self.tool_before_play = Some((self.tool.clone(), self.current_tool_name.clone()));
+        self.view_before_play = Some(camera::capture(&self.scroll));
         // Drop any in-flight interaction so its release cannot commit an edit mid-play.
         self.dragging_entity = false;
         self.dragging_polygon_point = false;
@@ -635,6 +642,10 @@ impl EditorState {
         if let Some((tool, name)) = self.tool_before_play.take() {
             self.tool = tool;
             self.current_tool_name = name;
+        }
+        if let Some(view) = self.view_before_play.take() {
+            camera::restore(&mut self.scroll, view);
+            self.scroll_offset = self.scroll.pixel_offset();
         }
         self.play = None;
         trace!("play_stopped");
@@ -671,28 +682,23 @@ impl EditorState {
     }
 
     /// Follow the character with the canvas, using the game's camera constants.
-    fn follow_with_camera(&mut self, viewport: egui::Rect, dt: f32) {
-        let Some(play) = &self.play else { return };
-        let play = &play.player;
-        let target_x = play.pos.x - viewport.width() * 0.5;
-        // Game: goal_y = player.y + CAMERA_OFFSET_Y in a Y-up world, i.e. the camera aims
-        // above the player so the player sits below screen centre. In Y-down that is a
-        // subtraction.
-        let target_y = play.pos.y - viewport.height() * 0.5 - game_config::CAMERA_OFFSET_Y;
+    /// Re-apply the containment bound without smoothing, for when the character has been
+    /// moved after this frame's [`Self::follow_with_camera`] has already run.
+    fn contain_play_camera(&mut self, panel: egui::Rect) {
+        let Some(pos) = self.play.as_ref().map(|s| s.player.pos) else { return };
+        self.scroll.offset = camera::contain(self.scroll.offset, pos, panel);
+        self.scroll_offset = self.scroll.pixel_offset();
+    }
 
-        let dx = target_x - self.scroll.offset.x;
-        if dx.abs() > game_config::CAMERA_DEAD_ZONE_X {
-            let k = 1.0 - (-game_config::CAMERA_FOLLOW_RATE_X * dt).exp();
-            self.scroll.offset.x += dx * k;
-        }
-        let mut rate_y = game_config::CAMERA_FOLLOW_RATE_Y;
-        if play.vel.y > game_config::CAMERA_FALL_SPEED_THRESHOLD {
-            rate_y *= game_config::CAMERA_FALL_CATCHUP_MULT;
-        }
-        let k = 1.0 - (-rate_y * dt).exp();
-        self.scroll.offset.y += (target_y - self.scroll.offset.y) * k;
-        self.scroll.offset.x = self.scroll.offset.x.max(0.0);
-        self.scroll.offset.y = self.scroll.offset.y.max(0.0);
+    /// Follow the character and keep it on screen. `panel` is the canvas rectangle, not
+    /// the window: the camera centres on it, and the containment bound is measured
+    /// against it. The offset may go negative here — while play owns the camera the
+    /// editor's origin clamp does not apply, so a character at negative world
+    /// coordinates is still shown.
+    fn follow_with_camera(&mut self, panel: egui::Rect, dt: f32) {
+        let Some(session) = &self.play else { return };
+        let play = &session.player;
+        self.scroll.offset = camera::follow(self.scroll.offset, play.pos, play.vel, panel, dt);
         self.scroll.velocity = Vec2::ZERO;
     }
 
@@ -700,7 +706,7 @@ impl EditorState {
     fn draw_play(&self, painter: &egui::Painter, offset: Vec2) {
         let Some(session) = &self.play else { return };
         let play = &session.player;
-        let c = play.pos - offset;
+        let c = camera::screen_pos(play.pos, offset);
         let r = game_config::PLAYER_CAPSULE_RADIUS;
         let hh = game_config::PLAYER_CAPSULE_HALF_HEIGHT;
         let body = egui::Rect::from_min_max(
@@ -1252,18 +1258,25 @@ impl eframe::App for EditorState {
 
         // Advance the play simulation on its own fixed timestep, then let the camera
         // follow. Play mode always repaints so the motion is continuous.
+        // The canvas rectangle, taken once so the frame's follow and any later re-bind
+        // measure the character against exactly the same area.
+        let play_panel = ctx.available_rect();
         if self.play.is_some() {
             let input = Self::play_input(ctx);
             let world = self.collision_world();
             if let Some(play) = &mut self.play {
                 play.advance(&world, input, dt);
             }
-            let viewport = ctx.available_rect();
-            self.follow_with_camera(viewport, dt);
+            self.follow_with_camera(play_panel, dt);
             ctx.request_repaint();
         }
 
-        self.scroll.step(held, dt);
+        // While play owns the camera the editor's scroll model is not stepped: its
+        // origin clamp would otherwise pull the camera back every frame and stop it
+        // showing anything left of or above the level origin.
+        if self.play.is_none() {
+            self.scroll.step(held, dt);
+        }
         self.scroll_offset = self.scroll.pixel_offset();
         if self.scroll.needs_repaint(held) {
             // Keep advancing at display rate instead of OS key-repeat rate.
@@ -1636,6 +1649,10 @@ impl eframe::App for EditorState {
                         if let Some(play) = &mut self.play {
                             play.respawn_at(spawn);
                         }
+                        // The character just jumped, after this frame's camera update and
+                        // before it is drawn. Re-apply the containment bound now so a
+                        // click near a canvas edge cannot show it off screen for a frame.
+                        self.contain_play_camera(play_panel);
                         trace!("play_spawn_moved {:?}", spawn);
                     } else if !toolbox_click && !help_click {
                         // Adjust position for scroll offset
