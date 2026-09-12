@@ -173,6 +173,10 @@ impl HelpContent {
         };
 
         let file = vec![
+            HelpEntry::new(
+                "File \u{2192} New Level",
+                "Start an empty level; asks whether to save first when there are unsaved changes.",
+            ),
             HelpEntry::new("File \u{2192} Background Image", "Choose a PNG to show behind the level."),
             HelpEntry::new("File \u{2192} Load Level", "Open a level JSON file."),
             HelpEntry::new("File \u{2192} Save Level", "Write the level JSON file."),
@@ -319,6 +323,7 @@ mod tests {
         assert_eq!(
             labels(&c.file),
             vec![
+                "File → New Level",
                 "File → Background Image",
                 "File → Load Level",
                 "File → Save Level",
@@ -329,7 +334,11 @@ mod tests {
             ],
             "the menus section must list every menu item the editor offers"
         );
-        assert!(c.file[3].effect.contains("unsaved"), "Exit must mention the unsaved-changes prompt");
+        // Found by name, not position, so adding a menu item cannot silently move it.
+        let exit = c.file.iter().find(|e| e.label.ends_with("Exit")).expect("Exit is listed");
+        assert!(exit.effect.contains("unsaved"), "Exit must mention the unsaved-changes prompt");
+        let new = c.file.iter().find(|e| e.label.ends_with("New Level")).expect("New Level is listed");
+        assert!(new.effect.contains("unsaved"), "New Level must mention it too");
     }
 
     #[test]

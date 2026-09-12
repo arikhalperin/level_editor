@@ -51,14 +51,20 @@ pub struct ScrollModel {
 
 impl ScrollModel {
     /// Advance the model by `dt` seconds with the given held directions.
-    pub fn step(&mut self, held: HeldDirs, dt: f32) {
+    /// Advance the model by `dt`, confined to `0 ..= max` on each axis.
+    ///
+    /// `max` is supplied every step so the reachable area tracks the level size live: the
+    /// editor passes the resolved level extent, which puts one full viewport of slack
+    /// past the level's far edge (the visible region is `offset ..= offset + viewport`).
+    /// A negative component is treated as zero so the range can never invert.
+    pub fn step(&mut self, held: HeldDirs, dt: f32, max: Vec2) {
         let dt = if dt.is_finite() && dt > 0.0 { dt } else { 0.0 };
         let dir = held.axis_input();
-        Self::step_axis(&mut self.offset.x, &mut self.velocity.x, dir.x, dt);
-        Self::step_axis(&mut self.offset.y, &mut self.velocity.y, dir.y, dt);
+        Self::step_axis(&mut self.offset.x, &mut self.velocity.x, dir.x, dt, max.x);
+        Self::step_axis(&mut self.offset.y, &mut self.velocity.y, dir.y, dt, max.y);
     }
 
-    fn step_axis(pos: &mut f32, vel: &mut f32, dir: f32, dt: f32) {
+    fn step_axis(pos: &mut f32, vel: &mut f32, dir: f32, dt: f32, max: f32) {
         if dir != 0.0 {
             // Accelerate toward the target speed at a fixed rate.
             let target = dir * MAX_SPEED;
@@ -78,9 +84,14 @@ impl ScrollModel {
 
         *pos += *vel * dt;
 
-        // Clamp at the origin; momentum stops there instead of overshooting.
+        // Confine to the reachable range. Momentum stops dead at either end rather than
+        // overshooting or bouncing.
+        let max = if max.is_finite() { max.max(0.0) } else { 0.0 };
         if *pos < 0.0 {
             *pos = 0.0;
+            *vel = 0.0;
+        } else if *pos > max {
+            *pos = max;
             *vel = 0.0;
         }
     }
@@ -106,6 +117,9 @@ mod tests {
     use super::*;
 
     const DT: f32 = 1.0 / 60.0;
+    /// Far beyond anything the behaviour tests reach, so they exercise motion rather than
+    /// the bound. The bound has its own tests below.
+    const FAR: Vec2 = Vec2::new(1.0e9, 1.0e9);
 
     fn hold(dirs: HeldDirs, secs: f32) -> ScrollModel {
         let mut m = ScrollModel::default();
@@ -116,7 +130,7 @@ mod tests {
     fn run(m: &mut ScrollModel, dirs: HeldDirs, secs: f32) {
         let steps = (secs / DT).round() as usize;
         for _ in 0..steps {
-            m.step(dirs, DT);
+            m.step(dirs, DT, FAR);
         }
     }
 
@@ -147,12 +161,128 @@ mod tests {
     }
 
     #[test]
-    fn no_upper_bound_scrolls_past_background_and_content() {
-        // The bundled level_image.png is 25600 x 720.
-        let m = hold(RIGHT, 30.0);
-        assert!(m.offset.x > 25600.0, "x must exceed the 25600 px background, got {}", m.offset.x);
-        let m = hold(DOWN, 5.0);
-        assert!(m.offset.y > 720.0, "y must exceed the 720 px background, got {}", m.offset.y);
+    fn scrolling_reaches_past_the_background_when_the_level_is_that_big() {
+        // The bundled level_image.png is 25600 x 720, and a level sized to it can be
+        // scrolled all the way to its far edge — a full viewport past the image.
+        let level = Vec2::new(25600.0, 720.0);
+        let mut m = ScrollModel::default();
+        run_bounded(&mut m, RIGHT, 60.0, level);
+        assert!(m.offset.x > 25600.0 - 1.0, "x should reach the level's far edge, got {}", m.offset.x);
+        let mut m = ScrollModel::default();
+        run_bounded(&mut m, DOWN, 5.0, level);
+        assert!(m.offset.y > 720.0 - 1.0, "y should reach the level's far edge, got {}", m.offset.y);
+    }
+
+    /// Hold `dirs` for `secs` against a specific bound.
+    fn run_bounded(m: &mut ScrollModel, dirs: HeldDirs, secs: f32, max: Vec2) {
+        for _ in 0..((secs / DT).round() as usize) {
+            m.step(dirs, DT, max);
+        }
+    }
+
+    // ── The reachable range ─────────────────────────────────────────────────────
+
+    #[test]
+    fn the_offset_never_passes_the_supplied_maximum() {
+        let level = Vec2::new(4000.0, 3000.0);
+        let mut m = ScrollModel::default();
+        for _ in 0..((30.0 / DT) as usize) {
+            m.step(HeldDirs { right: true, down: true, ..NONE }, DT, level);
+            assert!(
+                m.offset.x <= level.x + 1e-3 && m.offset.y <= level.y + 1e-3,
+                "offset {:?} passed the bound {level:?}",
+                m.offset
+            );
+            assert!(m.offset.x >= 0.0 && m.offset.y >= 0.0, "and must stay non-negative");
+        }
+        assert!((m.offset.x - level.x).abs() < 1.0, "should rest at the bound, got {}", m.offset.x);
+        assert!((m.offset.y - level.y).abs() < 1.0);
+    }
+
+    #[test]
+    fn momentum_stops_dead_at_the_far_bound() {
+        // Coasting at full speed a short way from the bound, the mirror of
+        // `momentum_toward_origin_stops_exactly_at_zero`.
+        let level = Vec2::new(1000.0, 800.0);
+        let mut m = ScrollModel {
+            offset: level - Vec2::new(20.0, 12.0),
+            velocity: Vec2::new(MAX_SPEED, MAX_SPEED),
+        };
+        for _ in 0..600 {
+            m.step(NONE, DT, level);
+            assert!(m.offset.x <= level.x + 1e-3 && m.offset.y <= level.y + 1e-3, "overshot");
+        }
+        assert_eq!(m.offset, level, "should be pinned exactly at the bound");
+        assert_eq!(m.velocity, Vec2::ZERO, "with no momentum left, and no bounce");
+    }
+
+    #[test]
+    fn the_far_bound_leaves_exactly_one_viewport_of_slack() {
+        // The distinction that matters: the view is clamped to the level *plus a screen*,
+        // not to the level. A strict clamp would stop with the level's far edge at the
+        // viewport's far edge (offset = level - viewport); this one goes exactly one
+        // viewport further, so a whole empty screen past the boundary is reachable and
+        // usable for placement. Checked across window sizes, including one larger than
+        // the level, since the slack is expressed without a viewport term.
+        let level = Vec2::new(4000.0, 3000.0);
+        for viewport in [
+            Vec2::new(1280.0, 700.0),
+            Vec2::new(640.0, 360.0),
+            Vec2::new(3000.0, 2400.0),
+            Vec2::new(5000.0, 4000.0),
+        ] {
+            let mut m = ScrollModel::default();
+            run_bounded(&mut m, HeldDirs { right: true, down: true, ..NONE }, 30.0, level);
+
+            let strict = level - viewport;
+            assert!(
+                (m.offset.x - strict.x - viewport.x).abs() < 1.0,
+                "viewport {viewport:?}: reachable offset {} should be one viewport past a \
+                 strict clamp at {}",
+                m.offset.x,
+                strict.x
+            );
+            assert!((m.offset.y - strict.y - viewport.y).abs() < 1.0, "viewport {viewport:?}");
+
+            // Which is to say: the level's far edge sits at the near edge of the view and
+            // the rest of the screen is empty space beyond it.
+            let visible_far = m.offset + viewport;
+            assert!((m.offset.x - level.x).abs() < 1.0, "near edge is the level's far edge");
+            assert!(((visible_far.x - level.x) - viewport.x).abs() < 1.0);
+            assert!(((visible_far.y - level.y) - viewport.y).abs() < 1.0);
+        }
+    }
+
+    #[test]
+    fn the_bound_tracks_the_level_size_in_both_directions() {
+        let small = Vec2::new(500.0, 400.0);
+        let mut m = ScrollModel::default();
+        run_bounded(&mut m, HeldDirs { right: true, down: true, ..NONE }, 10.0, small);
+        assert!((m.offset.x - small.x).abs() < 1.0, "pinned to the small level");
+
+        // Enlarging the level immediately allows going further.
+        let big = Vec2::new(9000.0, 7000.0);
+        run_bounded(&mut m, HeldDirs { right: true, down: true, ..NONE }, 5.0, big);
+        assert!(m.offset.x > small.x + 100.0, "should scroll past the old bound, got {}", m.offset.x);
+
+        // Shrinking it pulls an out-of-range offset straight back.
+        m.step(NONE, DT, small);
+        assert_eq!(m.offset, small, "an offset beyond a shrunk bound is pulled to it");
+        assert_eq!(m.velocity, Vec2::ZERO);
+    }
+
+    #[test]
+    fn a_degenerate_or_tiny_bound_never_inverts_the_range() {
+        for max in [Vec2::ZERO, Vec2::new(1.0, 1.0), Vec2::new(-50.0, -50.0), Vec2::new(f32::NAN, f32::NAN)] {
+            let mut m = ScrollModel::default();
+            run_bounded(&mut m, HeldDirs { right: true, down: true, ..NONE }, 2.0, max);
+            let expect = Vec2::new(
+                if max.x.is_finite() { max.x.max(0.0) } else { 0.0 },
+                if max.y.is_finite() { max.y.max(0.0) } else { 0.0 },
+            );
+            assert_eq!(m.offset, expect, "bound {max:?} should clamp to {expect:?}");
+            assert!(m.offset.x >= 0.0 && m.offset.y >= 0.0, "and never go negative");
+        }
     }
 
     #[test]
@@ -170,7 +300,7 @@ mod tests {
             velocity: Vec2::new(-MAX_SPEED, -MAX_SPEED),
         };
         for _ in 0..600 {
-            m.step(NONE, DT);
+            m.step(NONE, DT, FAR);
             assert!(m.offset.x >= 0.0 && m.offset.y >= 0.0, "offset went negative: {:?}", m.offset);
         }
         assert_eq!(m.offset, Vec2::ZERO, "must stop exactly at the origin");
@@ -200,7 +330,7 @@ mod tests {
         let mut prev_speed = v_at_release;
         let mut moved_after_release = false;
         while m.is_moving() {
-            m.step(NONE, DT);
+            m.step(NONE, DT, FAR);
             elapsed += DT;
             if m.offset.x > x_at_release {
                 moved_after_release = true;
@@ -272,8 +402,8 @@ mod tests {
     fn ignores_invalid_dt() {
         let mut m = hold(RIGHT, 0.5);
         let before = m;
-        m.step(RIGHT, f32::NAN);
-        m.step(RIGHT, -1.0);
+        m.step(RIGHT, f32::NAN, FAR);
+        m.step(RIGHT, -1.0, FAR);
         assert_eq!(m, before);
     }
 }

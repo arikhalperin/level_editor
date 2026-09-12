@@ -73,6 +73,7 @@ Lists every item in every menu, prefixed by its menu name:
 
 | Item | Effect |
 | --- | --- |
+| File → New Level | Start an empty level; asks whether to save first when there are unsaved changes. |
 | File → Background Image | Choose a PNG to show behind the level. |
 | File → Load Level | Open a level JSON file. |
 | File → Save Level | Write the level JSON file. |

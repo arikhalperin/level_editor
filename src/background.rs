@@ -100,6 +100,21 @@ impl BackgroundImageController {
         }
     }
 
+    /// Drop the loaded image and everything derived from it, as `File → New Level` does.
+    pub fn clear(&mut self) {
+        *self = Self::new();
+        trace!("background_cleared");
+    }
+
+    /// Whether an image is currently loaded. Test-only observer for `clear()`.
+    #[cfg(test)]
+    pub fn has_image(&self) -> bool {
+        self.full_image.is_some()
+            || self.grid.is_some()
+            || self.image_width != 0
+            || self.image_height != 0
+    }
+
     pub fn load_image(&mut self, path: &std::path::PathBuf) -> Result<(u32, u32), String> {
         trace!("background_load_image_start path={:?}", path);
         match image::open(path) {
@@ -288,6 +303,19 @@ impl BackgroundImageController {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn clearing_drops_the_loaded_image_and_everything_derived_from_it() {
+        let mut c = BackgroundImageController::new();
+        assert!(!c.has_image(), "starts empty");
+        let path = std::path::PathBuf::from("src/assets/wall.png");
+        c.load_image(&path).expect("the bundled wall.png should load");
+        assert!(c.has_image(), "an image is loaded");
+
+        c.clear();
+        assert!(!c.has_image(), "clear drops the image, its size and its tile grid");
+        assert!(c.tiles.is_empty() && c.minimap_texture.is_none(), "and the cached textures");
+    }
 
     #[test]
     fn tiles_never_exceed_max_edge_on_either_axis() {

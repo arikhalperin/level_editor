@@ -9,7 +9,7 @@ Complete target behaviour of the level-editor canvas viewport after this change 
 - The canvas shows a level in world coordinates anchored at the top-left origin (0, 0), Y-down. This matches egui's convention; the Bevy integration flips Y against `background_height` on import.
 - The viewport is described by `scroll_offset: Vec2` — the world position visible at the top-left corner of the central canvas panel.
 - `screen = world − round(scroll_offset)` and `world = screen + scroll_offset`.
-- While editing, `scroll_offset.x ≥ 0` and `scroll_offset.y ≥ 0`. There is **no** upper bound on either axis: the user can scroll arbitrarily far right or down to place entities beyond the background image or beyond any existing entity. While play mode is running the camera owns the offset and may take it negative, so a character at negative world coordinates stays on screen; `ScrollModel` is not stepped then, and its own origin clamp is unchanged.
+- While editing, `0 ≤ scroll_offset ≤ level_size` on each axis, where `level_size` is the resolved level extent (see `level-lifecycle`). The upper bound is exactly one screen of slack: at it, the level's far edge sits at the near edge of the viewport, so the user can still scroll a full screen past the background image or the outermost entity and place entities there. While play mode is running the camera owns the offset and may take it outside that range, including negative, so a character at negative world coordinates stays on screen; `ScrollModel` is not stepped then, and both of its clamps are unchanged.
 
 ## Input
 

@@ -16,7 +16,7 @@ The level boundary is drawn on the canvas as a thin outline from world (0, 0) to
 
 The minimap computes its thumbnail area and viewport rectangle against the resolved level size.
 
-The size does **not** clamp scrolling. The canvas still scrolls arbitrarily far right and down, and entities may still be placed beyond the boundary, preserving the behaviour confirmed in the two-axis-smooth-scrolling change; the boundary is a marker, and the level can be grown afterwards to take in what was placed outside it.
+The size bounds scrolling to the level plus one screen of slack (see `level-lifecycle`), but does **not** clamp placement: the canvas still scrolls a full screen past the boundary and entities may still be placed out there; the boundary is a marker, and the level can be grown afterwards to take in what was placed outside it.
 
 ## Persistence
 
@@ -32,4 +32,4 @@ Consumers of the level JSON outside this editor must read the height from `level
 - A4 — A boundary outline is drawn from (0,0) to (width, height) and scrolls with the level.
 - A5 — The minimap uses the resolved level size as its extent.
 - A6 — Non-finite, zero, negative or above-1 000 000 values are refused and the previous size kept.
-- A7 — Scrolling and entity placement remain unbounded beyond the boundary.
+- A7 — Entity placement remains unbounded beyond the boundary, within the screen of slack the view can reach; scrolling itself is bounded to `0 … level_size`.

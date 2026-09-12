@@ -17,6 +17,9 @@ use scroll::{HeldDirs, ScrollModel};
 
 mod camera;
 
+mod new_level;
+use new_level::BlankLevel;
+
 mod help;
 use help::{escape_action, escape_closes_help, EscapeAction, HelpContent};
 
@@ -40,6 +43,25 @@ use std::collections::HashMap;
 use eframe::egui;
 use egui::{Color32, Pos2, Vec2};
 use tracing::{error, trace, warn};
+
+/// A command that destroys the current level and so must ask about unsaved work first.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum PendingAction {
+    Exit,
+    NewLevel,
+}
+
+impl PendingAction {
+    /// How the confirmation describes what is about to happen.
+    fn prompt(self) -> &'static str {
+        match self {
+            PendingAction::Exit => "You have unsaved changes. Save before exiting?",
+            PendingAction::NewLevel => {
+                "You have unsaved changes. Save before starting a new level?"
+            }
+        }
+    }
+}
 
 #[derive(Clone, PartialEq, Debug)]
 enum Tool {
@@ -80,7 +102,8 @@ struct EditorState {
     undo_stack: Vec<Vec<Entity>>,
     redo_stack: Vec<Vec<Entity>>,
     last_save_hash: u64,
-    exit_requested: bool,
+    /// Which command is waiting on the unsaved-changes confirmation, if any.
+    pending_action: Option<PendingAction>,
     last_background_path: Option<std::path::PathBuf>,
     last_level_path: Option<std::path::PathBuf>,
     initial_load_done: bool,
@@ -153,7 +176,7 @@ impl Default for EditorState {
             undo_stack: Vec::new(),
             redo_stack: Vec::new(),
             last_save_hash: 0,
-            exit_requested: false,
+            pending_action: None,
             last_background_path: None,
             last_level_path: None,
             initial_load_done: false,
@@ -252,15 +275,54 @@ impl EditorState {
     }
     
     fn compute_entities_hash(&self) -> u64 {
-        use std::collections::hash_map::DefaultHasher;
-        use std::hash::{Hash, Hasher};
-        
-        let mut hasher = DefaultHasher::new();
-        format!("{:?}", self.entities).hash(&mut hasher);
-        // The explicit level size is saved with the level, so changing it is an
-        // unsaved change too.
-        format!("{:?}", self.level_size).hash(&mut hasher);
-        hasher.finish()
+        new_level::level_hash(&self.entities, self.level_size)
+    }
+
+    /// Throw the level away and start an empty one. Pure in-memory: nothing is written,
+    /// deleted or overwritten on disk.
+    fn new_level(&mut self) {
+        let blank = BlankLevel::new();
+        self.entities = blank.entities;
+        self.level_size = blank.level_size;
+        self.background_size = blank.background_size;
+        self.background_controller.clear();
+        self.play_spawn = blank.play_spawn;
+        self.last_click_pos = None;
+        self.selected_entity = blank.selected_entity;
+        self.editing_polygon_entity = blank.editing_polygon_entity;
+        self.editing_polygon_point = blank.editing_polygon_point;
+        self.dragging_entity = false;
+        self.dragging_polygon_point = false;
+        self.drawing_polygon = None;
+        self.undo_stack = blank.undo_stack;
+        self.redo_stack = blank.redo_stack;
+        self.scroll = blank.scroll;
+        self.scroll_offset = self.scroll.pixel_offset();
+        // The Level Size window is reachable from the menu bar while it is open; leaving
+        // it up would let its OK re-apply the old level's explicit size to the new one.
+        self.size_dialog = None;
+        self.last_level_path = blank.last_level_path;
+        self.last_background_path = blank.last_background_path;
+        // Marked clean from the blank content itself, so a fresh level never starts dirty.
+        self.last_save_hash = BlankLevel::new().clean_hash();
+        trace!("new_level_started");
+    }
+
+    /// Run the command that was waiting on the unsaved-changes confirmation.
+    fn run_pending_action(&mut self, action: PendingAction) {
+        match action {
+            PendingAction::Exit => std::process::exit(0),
+            PendingAction::NewLevel => self.new_level(),
+        }
+    }
+
+    /// Start `action`, asking about unsaved work first when there is any.
+    fn request_action(&mut self, action: PendingAction) {
+        if self.has_unsaved_changes() {
+            self.pending_action = Some(action);
+        } else {
+            self.run_pending_action(action);
+        }
     }
     
     fn has_unsaved_changes(&self) -> bool {
@@ -438,7 +500,10 @@ impl EditorState {
         }
     }
 
-    fn save_level(&mut self) -> Result<(), Box<dyn std::error::Error>> {
+    /// Returns `true` when a file was actually written; `false` when the user dismissed
+    /// the destination dialog, so callers waiting on the save (the unsaved-changes
+    /// confirmation) do not go ahead and throw the work away.
+    fn save_level(&mut self) -> Result<bool, Box<dyn std::error::Error>> {
         trace!("save_level_start entities={}", self.entities.len());
         
         let level_data = LevelData {
@@ -462,11 +527,11 @@ impl EditorState {
             std::fs::write(&path, json)?;
             self.last_save_hash = self.compute_entities_hash();
             trace!("save_level_success path={:?} entities={}", path, level_data.entities.len());
-        } else {
-            trace!("save_level_cancelled");
+            return Ok(true);
         }
 
-        Ok(())
+        trace!("save_level_cancelled");
+        Ok(false)
     }
 
     fn load_level_from_path(&mut self, path: std::path::PathBuf) -> Result<(), Box<dyn std::error::Error>> {
@@ -1113,6 +1178,17 @@ impl eframe::App for EditorState {
         let menu_bar = egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::menu::bar(ui, |ui| {
                 ui.menu_button("File", |ui| {
+                    let can_edit = self.play.is_none();
+                    if ui
+                        .add_enabled(can_edit, egui::Button::new("New Level"))
+                        .on_disabled_hover_text("Stop play mode first")
+                        .clicked()
+                    {
+                        self.ui_consumed_click = true;
+                        ui.close_menu();
+                        trace!("menu_new_level_clicked");
+                        self.request_action(PendingAction::NewLevel);
+                    }
                     if ui.button("Background Image").clicked() {
                         self.ui_consumed_click = true;
                         ui.close_menu();
@@ -1125,7 +1201,6 @@ impl eframe::App for EditorState {
                             self.load_background_image(path);
                         }
                     }
-                    let can_edit = self.play.is_none();
                     if ui
                         .add_enabled(can_edit, egui::Button::new("Load Level"))
                         .on_disabled_hover_text("Stop play mode first")
@@ -1150,11 +1225,7 @@ impl eframe::App for EditorState {
                     if ui.button("Exit").clicked() {
                         self.ui_consumed_click = true;
                         ui.close_menu();
-                        if self.has_unsaved_changes() {
-                            self.exit_requested = true;
-                        } else {
-                            std::process::exit(0);
-                        }
+                        self.request_action(PendingAction::Exit);
                     }
                 });
                 ui.menu_button("Level", |ui| {
@@ -1190,29 +1261,39 @@ impl eframe::App for EditorState {
         self.render_size_dialog(ctx);
         
         // Handle exit with unsaved changes prompt
-        if self.exit_requested {
+        if let Some(action) = self.pending_action {
             let mut open = true;
+            let mut resolved = false;
             egui::Window::new("Unsaved Changes")
                 .open(&mut open)
                 .show(ctx, |ui| {
-                    ui.label("You have unsaved changes. Do you want to save before exiting?");
+                    ui.label(action.prompt());
                     ui.horizontal(|ui| {
-                        if ui.button("Save and Exit").clicked() {
-                            if let Err(e) = self.save_level() {
-                                error!("save_level_error error={}", e);
+                        if ui.button("Save").clicked() {
+                            // Dismissing the destination dialog, or a failed write, leaves
+                            // the work unsaved: keep the confirmation open rather than
+                            // discarding it behind the user's back.
+                            match self.save_level() {
+                                Ok(saved) => resolved = saved,
+                                Err(e) => error!("save_level_error error={}", e),
                             }
-                            std::process::exit(0);
                         }
-                        if ui.button("Exit without Saving").clicked() {
-                            std::process::exit(0);
+                        if ui.button("Discard").clicked() {
+                            resolved = true;
                         }
                         if ui.button("Cancel").clicked() {
-                            self.exit_requested = false;
+                            // Abandon the command entirely; nothing is changed.
+                            self.pending_action = None;
                         }
                     });
                 });
+            // Closing the window with its X is a cancel.
             if !open {
-                self.exit_requested = false;
+                self.pending_action = None;
+            }
+            if resolved {
+                self.pending_action = None;
+                self.run_pending_action(action);
             }
         }
 
@@ -1275,7 +1356,9 @@ impl eframe::App for EditorState {
         // origin clamp would otherwise pull the camera back every frame and stop it
         // showing anything left of or above the level origin.
         if self.play.is_none() {
-            self.scroll.step(held, dt);
+            // The reachable area is the level plus one viewport of slack: an offset of
+            // level_size puts the level's far edge at the viewport's near edge.
+            self.scroll.step(held, dt, self.resolved_level_size());
         }
         self.scroll_offset = self.scroll.pixel_offset();
         if self.scroll.needs_repaint(held) {
@@ -1948,4 +2031,106 @@ fn main() {
         options,
         Box::new(|_cc| Box::new(EditorState::default())),
     );
+}
+
+#[cfg(test)]
+mod editor_state_tests {
+    use super::*;
+
+    fn a_polygon() -> Entity {
+        Entity::new_polygon_with_type_and_color(
+            vec![Pos2::new(0.0, 0.0), Pos2::new(10.0, 0.0), Pos2::new(10.0, 10.0)],
+            "wall_tool".to_string(),
+            None,
+        )
+    }
+
+    /// An editor with a level open in it and every piece of level-bearing state dirtied,
+    /// so `new_level` has something to clear on each of them.
+    fn a_working_editor() -> EditorState {
+        let mut e = EditorState::default();
+        e.entities = vec![a_polygon(), a_polygon()];
+        e.level_size = Some(Vec2::new(4000.0, 3000.0));
+        e.background_size = Vec2::new(4000.0, 3000.0);
+        e.background_controller
+            .load_image(&std::path::PathBuf::from("src/assets/wall.png"))
+            .expect("the bundled wall.png should load");
+        e.play_spawn = Some(Pos2::new(120.0, 340.0));
+        e.last_click_pos = Some(Pos2::new(500.0, 600.0));
+        e.selected_entity = Some(1);
+        e.editing_polygon_entity = Some(1);
+        e.editing_polygon_point = Some(2);
+        e.dragging_entity = true;
+        e.dragging_polygon_point = true;
+        e.drawing_polygon = Some(vec![Pos2::new(0.0, 0.0)]);
+        e.undo_stack = vec![vec![a_polygon()]];
+        e.redo_stack = vec![vec![]];
+        e.scroll = ScrollModel { offset: Vec2::new(900.0, 700.0), velocity: Vec2::new(400.0, -200.0) };
+        e.scroll_offset = e.scroll.pixel_offset();
+        e.last_level_path = Some(std::path::PathBuf::from("/tmp/some_level.json"));
+        e.last_background_path = Some(std::path::PathBuf::from("src/assets/wall.png"));
+        e.size_dialog = Some(("4000".to_string(), "3000".to_string()));
+        e.last_save_hash = e.compute_entities_hash();
+        e
+    }
+
+    #[test]
+    fn a_new_level_clears_the_level_that_was_open() {
+        let mut e = a_working_editor();
+        e.new_level();
+
+        assert!(e.entities.is_empty(), "no entities");
+        assert_eq!(e.level_size, None, "no explicit size, so the extent resolves again");
+        assert_eq!(e.background_size, Vec2::ZERO, "no background size");
+        assert!(!e.background_controller.has_image(), "and no background image");
+        assert_eq!(e.play_spawn, None, "no spawn point");
+        assert_eq!(e.last_click_pos, None, "and no click for play to spawn from");
+        assert_eq!(e.selected_entity, None, "nothing selected");
+        assert_eq!(e.editing_polygon_entity, None);
+        assert_eq!(e.editing_polygon_point, None, "no polygon being edited");
+        assert!(!e.dragging_entity && !e.dragging_polygon_point, "no drag in progress");
+        assert!(e.drawing_polygon.is_none(), "no polygon being drawn");
+        assert!(e.undo_stack.is_empty() && e.redo_stack.is_empty(), "no history");
+        assert!(e.size_dialog.is_none(), "the Level Size dialog is closed");
+    }
+
+    #[test]
+    fn a_new_level_puts_the_view_back_at_the_origin() {
+        let mut e = a_working_editor();
+        e.new_level();
+        assert_eq!(e.scroll.offset, Vec2::ZERO, "view at the origin");
+        assert_eq!(e.scroll.velocity, Vec2::ZERO, "and stationary, not still gliding");
+        assert_eq!(e.scroll_offset, Vec2::ZERO, "including the offset renderers read");
+    }
+
+    #[test]
+    fn a_new_level_reads_as_clean_so_quitting_does_not_prompt() {
+        let mut e = a_working_editor();
+        e.entities.push(a_polygon());
+        assert!(e.has_unsaved_changes(), "the working editor is dirty to begin with");
+        e.new_level();
+        assert!(!e.has_unsaved_changes(), "a fresh level is not unsaved work");
+    }
+
+    #[test]
+    fn a_new_level_forgets_the_file_that_was_open() {
+        let mut e = a_working_editor();
+        e.new_level();
+        assert_eq!(e.last_level_path, None, "so Save Level asks for a destination");
+        assert_eq!(e.last_background_path, None);
+    }
+
+    #[test]
+    fn dirtying_a_new_level_is_noticed() {
+        // The clean marker is not a blanket "always clean": the first edit after the
+        // reset registers.
+        let mut e = a_working_editor();
+        e.new_level();
+        e.entities.push(a_polygon());
+        assert!(e.has_unsaved_changes(), "an entity added after the reset is unsaved work");
+
+        e.entities.clear();
+        e.level_size = Some(Vec2::new(2000.0, 1500.0));
+        assert!(e.has_unsaved_changes(), "and so is setting the level size");
+    }
 }
