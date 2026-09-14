@@ -18,7 +18,7 @@ built-in play mode so a level can be tested without leaving the editor.
 - **Play mode**: drop a controllable character into the level and test it — full movement
   (run, jump, dash, wall slide, wall jump, climb) plus combat (katana, orcs, coins, death
   pits, shield). Play never modifies the level.
-- **Minimap**: a thumbnail with the current viewport marked.
+- **Minimap**: a thumbnail with the current viewport marked. Click or drag on it to jump the view to that part of the level.
 - **Undo/redo**: Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z.
 - **In-app help**: press F1 for a window listing every key, gesture, tool and menu item.
 - **Save/load**: a small JSON format describing entity positions and types.

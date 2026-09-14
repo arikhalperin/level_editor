@@ -15,6 +15,9 @@ use background::BackgroundImageController;
 mod scroll;
 use scroll::{HeldDirs, ScrollModel};
 
+mod minimap;
+use minimap::MinimapLayout;
+
 mod camera;
 
 mod new_level;
@@ -121,6 +124,12 @@ struct EditorState {
     /// Set when a menu item was activated this frame, so the click that chose it is
     /// never also delivered to the canvas beneath the (now closed) dropdown.
     ui_consumed_click: bool,
+    /// Where the minimap (navigation box) sits this frame, shared by its renderer and its
+    /// hit-test so the drawn box and the clickable box are the same rectangle.
+    minimap_layout: Option<MinimapLayout>,
+    /// True from a left-button press on the minimap until release: every frame in between
+    /// re-centres the view on the pointer.
+    minimap_drag: bool,
     /// Explicit level extent, when one has been set. Saved to the level JSON.
     level_size: Option<Vec2>,
     /// Open state and in-progress text of the Level Size dialog.
@@ -185,6 +194,8 @@ impl Default for EditorState {
             size_dialog_rect: None,
             menu_bar_rect: None,
             ui_consumed_click: false,
+            minimap_layout: None,
+            minimap_drag: false,
             level_size: None,
             size_dialog: None,
             play: None,
@@ -293,6 +304,7 @@ impl EditorState {
         self.editing_polygon_point = blank.editing_polygon_point;
         self.dragging_entity = false;
         self.dragging_polygon_point = false;
+        self.minimap_drag = false;
         self.drawing_polygon = None;
         self.undo_stack = blank.undo_stack;
         self.redo_stack = blank.redo_stack;
@@ -619,9 +631,70 @@ impl EditorState {
         self.ui_consumed_click
             || self.pointer_over_panels(pos)
             || self.menu_bar_rect.is_some_and(|rect| rect.contains(pos))
+            // The minimap is a mouse control of its own: a press on it never reaches the
+            // canvas tools, and never moves the play spawn either. A gesture that began on
+            // it stays consumed through its release frame, wherever the release lands —
+            // egui still reports a click for a release a few pixels off the box.
+            || self.minimap_drag
+            || self.minimap_layout.is_some_and(|layout| layout.contains(pos))
             || ctx
                 .layer_id_at(pos)
                 .is_some_and(|layer| layer.order != egui::Order::Background)
+    }
+
+    /// Press-and-drag on the minimap re-centres the view on the pointed-at level spot.
+    ///
+    /// Runs after the scroll model has been stepped for the frame, so a drag re-applies
+    /// its target on top of any arrow-key motion and always wins. While play mode runs
+    /// the camera owns the offset and the minimap ignores the mouse (the press is still
+    /// consumed by `pointer_over_ui`, so it cannot move the spawn point).
+    fn handle_minimap_pointer(&mut self, ctx: &egui::Context, pointer: &egui::PointerState, panel: egui::Rect) {
+        let Some(layout) = self.minimap_layout else {
+            self.minimap_drag = false;
+            return;
+        };
+        let pos = pointer.interact_pos();
+        let hovering = pos.is_some_and(|p| layout.contains(p));
+
+        // The gesture lasts from the press through the release frame (so the click egui
+        // reports on release is still consumed, even a few pixels off the box), and ends
+        // on the frame after. This bookkeeping runs in play mode too: the press is owned
+        // by the minimap there as well, it just does nothing.
+        if self.minimap_drag && !pointer.primary_down() && !pointer.primary_released() {
+            self.minimap_drag = false;
+        }
+        if pointer.primary_pressed() && hovering {
+            self.minimap_drag = true;
+            // A click on an entity or vertex leaves a drag armed until the next release;
+            // this press is the minimap's, so that drag must not follow the pointer.
+            self.dragging_entity = false;
+            self.dragging_polygon_point = false;
+            self.drag_start = None;
+            trace!("minimap_press {:?}", pos);
+        }
+        if self.play.is_some() {
+            // The camera owns the view while playing: no jump, no drag, no hover cursor.
+            return;
+        }
+
+        let dragging = self.minimap_drag && pointer.primary_down();
+        if dragging {
+            if let Some(p) = pos {
+                // Instant: the offset is set directly and any momentum is discarded so
+                // nothing glides on after release.
+                self.scroll.offset = layout.offset_for_pointer(p, panel.size());
+                self.scroll.velocity = Vec2::ZERO;
+                self.scroll_offset = self.scroll.pixel_offset();
+                trace!("minimap_drag pointer={:?} offset={:?}", p, self.scroll.offset);
+            }
+            ctx.output_mut(|o| o.cursor_icon = egui::CursorIcon::Grabbing);
+            ctx.request_repaint();
+        } else if hovering {
+            ctx.output_mut(|o| o.cursor_icon = egui::CursorIcon::PointingHand);
+        }
+        if self.minimap_drag && pointer.primary_released() {
+            trace!("minimap_release offset={:?}", self.scroll.offset);
+        }
     }
 
     /// Maximum (x, y) reached by any entity, or `None` when the level is empty.
@@ -1024,18 +1097,20 @@ impl EditorState {
 }
 
 /// Draw a bottom-right minimap: full-level thumbnail when a background is loaded, and a rectangle for the visible area.
+///
+/// `layout` is the frame's shared minimap geometry (see `minimap::layout`), so the box
+/// drawn here is exactly the box the mouse hit-test uses.
 fn render_level_minimap(
     ctx: &egui::Context,
     bg: &mut BackgroundImageController,
-    background_size: Vec2,
+    layout: Option<MinimapLayout>,
     scroll_offset: Vec2,
-    entities: &[Entity],
     panel: egui::Rect,
 ) {
     let timestamp_secs = ctx.input(|i| i.time);
     let pixels_per_point = ctx.input(|i| i.pixels_per_point());
     let screen = ctx.screen_rect();
-    if panel.width() < 32.0 || panel.height() < 32.0 {
+    let Some(MinimapLayout { map_rect, inner, level }) = layout else {
         write_minimap_debug_json(&MinimapDebugSnapshot::early_only(
             timestamp_secs,
             panel,
@@ -1044,64 +1119,9 @@ fn render_level_minimap(
             pixels_per_point,
         ));
         return;
-    }
-
-    let level = if background_size.x >= 1.0 && background_size.y >= 1.0 {
-        background_size
-    } else {
-        let mut mx = 0.0_f32;
-        let mut my = 0.0_f32;
-        for e in entities {
-            match e {
-                Entity::Bitmap(b) => {
-                    mx = mx.max(b.pos.x + b.get_size().x);
-                    my = my.max(b.pos.y + b.get_size().y);
-                }
-                Entity::Polygon(p) => {
-                    for pt in &p.points {
-                        mx = mx.max(pt.x);
-                        my = my.max(pt.y);
-                    }
-                }
-            }
-        }
-        if mx >= 1.0 || my >= 1.0 {
-            Vec2::new(mx.max(1.0), my.max(1.0))
-        } else {
-            // No level bounds yet — use viewport size so the indicator still makes sense.
-            Vec2::new(panel.width().max(1.0), panel.height().max(1.0))
-        }
     };
-
-    let margin = 16.0;
-    let avail_w = (panel.width() - margin * 2.0).max(1.0);
-    let avail_h = (panel.height() - margin * 2.0).max(1.0);
-    let max_dim = 220.0_f32;
-    // Wide levels: initial scale can make one side a hairline; enforce a minimum readable size.
-    const MIN_MINIMAP_SIDE: f32 = 100.0;
-    let lw = level.x.max(1.0);
-    let lh = level.y.max(1.0);
-    let scale = (avail_w / lw)
-        .min(avail_h / lh)
-        .min(max_dim / lw.max(lh));
-    let mut map_w = lw * scale;
-    let mut map_h = lh * scale;
-    let min_side = map_w.min(map_h);
-    if min_side < MIN_MINIMAP_SIDE {
-        let factor = MIN_MINIMAP_SIDE / min_side;
-        map_w *= factor;
-        map_h *= factor;
-    }
-    let clamp = (avail_w / map_w).min(avail_h / map_h).min(1.0);
-    map_w *= clamp;
-    map_h *= clamp;
-    let map_pos = egui::pos2(panel.right() - margin - map_w, panel.bottom() - margin - map_h);
-    let mut map_rect = egui::Rect::from_min_size(map_pos, egui::vec2(map_w, map_h));
-    map_rect = map_rect.intersect(ctx.screen_rect());
-    if map_rect.width() < 4.0 || map_rect.height() < 4.0 {
-        return;
-    }
-    let inner = map_rect.shrink(4.0);
+    let map_w = map_rect.width();
+    let map_h = map_rect.height();
 
     // `debug_painter` uses `Order::Debug` (above panels, windows, and `Foreground`), with a
     // full-screen clip — this is the most reliable way to ensure the minimap is visible.
@@ -1471,6 +1491,12 @@ impl eframe::App for EditorState {
         let pointer_clicked = pointer.primary_clicked();
         let pointer_released = pointer.primary_released();
         let secondary_clicked = pointer.secondary_clicked();
+
+        // Minimap (navigation box) mouse navigation. The layout is computed once here,
+        // before any click is dispatched, from the same canvas rect the renderer uses.
+        let canvas_panel = ctx.available_rect();
+        self.minimap_layout = minimap::layout(canvas_panel, ctx.screen_rect(), self.resolved_level_size());
+        self.handle_minimap_pointer(ctx, &pointer, canvas_panel);
 
         trace!("update_toolbox_start toolbox_pos={:?} dragging={}", self.toolbox_pos, self.dragging_toolbox);
         // Render toolbox and get tool selection
@@ -1987,14 +2013,12 @@ impl eframe::App for EditorState {
                 );
             }
 
-            let level_extent = self.resolved_level_size();
             render_level_minimap(
                 ctx,
                 &mut self.background_controller,
-                level_extent,
+                self.minimap_layout,
                 self.scroll_offset,
-                &self.entities,
-                ui.clip_rect(),
+                canvas_panel,
             );
         });
         trace!("update_central_panel_end");
@@ -2072,6 +2096,153 @@ mod editor_state_tests {
         e.size_dialog = Some(("4000".to_string(), "3000".to_string()));
         e.last_save_hash = e.compute_entities_hash();
         e
+    }
+
+    // ── Minimap mouse navigation ─────────────────────────────────────────────
+
+    const CANVAS: egui::Rect = egui::Rect::from_min_max(Pos2::new(0.0, 40.0), Pos2::new(1280.0, 760.0));
+
+    /// Run one headless egui frame with the given pointer events and hand the resulting
+    /// pointer state to the minimap handler, exactly as `update` does.
+    fn minimap_frame(e: &mut EditorState, ctx: &egui::Context, events: Vec<egui::Event>) -> egui::PointerState {
+        let raw = egui::RawInput {
+            screen_rect: Some(egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 760.0))),
+            events,
+            ..Default::default()
+        };
+        ctx.begin_frame(raw);
+        let pointer = ctx.input(|i| i.pointer.clone());
+        e.minimap_layout = minimap::layout(CANVAS, ctx.screen_rect(), e.resolved_level_size());
+        e.handle_minimap_pointer(ctx, &pointer, CANVAS);
+        let _ = ctx.end_frame();
+        pointer
+    }
+
+    fn press(pos: Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: true, modifiers: Default::default() },
+        ]
+    }
+
+    fn release(pos: Pos2) -> Vec<egui::Event> {
+        vec![
+            egui::Event::PointerMoved(pos),
+            egui::Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: Default::default() },
+        ]
+    }
+
+    /// A wide level with an entity selected and its drag armed, as it is right after a
+    /// Select-tool click.
+    fn a_minimap_editor() -> EditorState {
+        let mut e = EditorState::default();
+        e.entities = vec![a_polygon(), a_polygon()];
+        e.level_size = Some(Vec2::new(25600.0, 720.0));
+        e.selected_entity = Some(1);
+        e.dragging_entity = true;
+        e.drag_start = Some(Pos2::new(300.0, 300.0));
+        e.scroll = ScrollModel { offset: Vec2::ZERO, velocity: Vec2::new(900.0, 0.0) };
+        e.scroll_offset = e.scroll.pixel_offset();
+        e.last_save_hash = e.compute_entities_hash();
+        e
+    }
+
+    #[test]
+    fn a_press_on_the_minimap_jumps_the_view_and_kills_momentum() {
+        let ctx = egui::Context::default();
+        let mut e = a_minimap_editor();
+        let layout = minimap::layout(CANVAS, egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 760.0)), e.resolved_level_size()).unwrap();
+        let middle = layout.inner.center();
+
+        minimap_frame(&mut e, &ctx, press(middle));
+        assert!(e.minimap_drag, "the gesture is armed");
+        assert!((e.scroll.offset.x - (12800.0 - CANVAS.width() / 2.0)).abs() < 2.0, "centred on the level middle, got {}", e.scroll.offset.x);
+        assert_eq!(e.scroll.velocity, Vec2::ZERO, "arrow-key momentum discarded");
+        assert_eq!(e.scroll_offset, e.scroll.pixel_offset(), "renderers see it this frame");
+    }
+
+    #[test]
+    fn a_minimap_press_drops_a_pending_entity_drag_and_leaves_the_level_alone() {
+        let ctx = egui::Context::default();
+        let mut e = a_minimap_editor();
+        let before = e.compute_entities_hash();
+        let layout = minimap::layout(CANVAS, egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 760.0)), e.resolved_level_size()).unwrap();
+        let start = layout.inner.center();
+
+        minimap_frame(&mut e, &ctx, press(start));
+        assert!(!e.dragging_entity && !e.dragging_polygon_point, "the armed drag is dropped at the press");
+        assert_eq!(e.drag_start, None);
+        minimap_frame(&mut e, &ctx, vec![egui::Event::PointerMoved(start + Vec2::new(200.0, 0.0))]);
+        minimap_frame(&mut e, &ctx, release(start + Vec2::new(200.0, 0.0)));
+        assert_eq!(e.compute_entities_hash(), before, "nothing moved");
+        assert!(!e.has_unsaved_changes(), "and nothing counts as an edit");
+    }
+
+    #[test]
+    fn the_gesture_is_consumed_through_the_release_frame_wherever_it_lands() {
+        let ctx = egui::Context::default();
+        let mut e = a_minimap_editor();
+        let layout = minimap::layout(CANVAS, egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 760.0)), e.resolved_level_size()).unwrap();
+        // Press on the frame, release 3 px above the box: egui still calls that a click.
+        let start = Pos2::new(layout.inner.center().x, layout.map_rect.top() + 1.0);
+        let off_box = start - Vec2::new(0.0, 4.0);
+        assert!(!layout.contains(off_box));
+
+        minimap_frame(&mut e, &ctx, press(start));
+        let pointer = minimap_frame(&mut e, &ctx, release(off_box));
+        assert!(pointer.primary_released());
+        assert!(e.minimap_drag, "still the minimap's gesture on the release frame");
+        assert!(e.pointer_over_ui(&ctx, off_box), "so the click is consumed, not delivered to a tool");
+
+        // The frame after, the gesture is over and the same spot is canvas again.
+        let pointer = minimap_frame(&mut e, &ctx, vec![egui::Event::PointerMoved(off_box)]);
+        assert!(!pointer.primary_down() && !pointer.primary_released());
+        assert!(!e.minimap_drag);
+        assert!(!e.pointer_over_ui(&ctx, off_box));
+    }
+
+    #[test]
+    fn a_drag_that_started_on_the_canvas_does_not_move_the_view_over_the_minimap() {
+        let ctx = egui::Context::default();
+        let mut e = a_minimap_editor();
+        let layout = minimap::layout(CANVAS, egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 760.0)), e.resolved_level_size()).unwrap();
+        let canvas_spot = Pos2::new(200.0, 200.0);
+        assert!(!layout.contains(canvas_spot));
+
+        minimap_frame(&mut e, &ctx, press(canvas_spot));
+        assert!(!e.minimap_drag);
+        assert!(e.dragging_entity, "a canvas press leaves the entity drag alone");
+        minimap_frame(&mut e, &ctx, vec![egui::Event::PointerMoved(layout.inner.center())]);
+        assert!(!e.minimap_drag);
+        assert_eq!(e.scroll.offset, Vec2::ZERO, "the view stayed put");
+    }
+
+    #[test]
+    fn the_minimap_ignores_the_mouse_while_playing_but_still_owns_the_spot() {
+        let ctx = egui::Context::default();
+        let mut e = a_minimap_editor();
+        e.play_spawn = Some(Pos2::new(100.0, 100.0));
+        e.toggle_play();
+        assert!(e.play.is_some());
+        let offset_before = e.scroll.offset;
+        let layout = minimap::layout(CANVAS, egui::Rect::from_min_size(Pos2::ZERO, Vec2::new(1280.0, 760.0)), e.resolved_level_size()).unwrap();
+        let middle = layout.inner.center();
+
+        minimap_frame(&mut e, &ctx, press(middle));
+        assert_eq!(e.scroll.offset, offset_before, "the camera keeps the view");
+        assert!(e.pointer_over_ui(&ctx, middle), "but the press is still consumed, so it cannot move the spawn");
+
+        // Even when the button comes up a few pixels off the box, where egui still
+        // reports a click: the release frame is still the minimap's.
+        let off_box = Pos2::new(middle.x, layout.map_rect.top() - 4.0);
+        assert!(!layout.contains(off_box));
+        minimap_frame(&mut e, &ctx, vec![egui::Event::PointerMoved(off_box)]);
+        let pointer = minimap_frame(&mut e, &ctx, release(off_box));
+        assert!(pointer.primary_released());
+        assert_eq!(e.scroll.offset, offset_before, "still no view change");
+        assert!(e.pointer_over_ui(&ctx, off_box), "the click at the release spot is consumed, not a spawn move");
+        minimap_frame(&mut e, &ctx, vec![egui::Event::PointerMoved(off_box)]);
+        assert!(!e.pointer_over_ui(&ctx, off_box), "and the frame after, the canvas is itself again");
     }
 
     #[test]

@@ -1,0 +1,1707 @@
+schema: comet.native.v4
+name: minimap-mouse-navigation
+language: en
+phase: archive
+status: done
+state_version: 15
+brief: brief.md
+spec_changes:
+  - capability: canvas-scrolling
+    operation: modify
+    source: specs/canvas-scrolling/spec.md
+  - capability: editor-help-screen
+    operation: modify
+    source: specs/editor-help-screen/spec.md
+  - capability: minimap-navigation
+    operation: create
+    source: specs/minimap-navigation/spec.md
+workspace:
+  isolation: current
+  change_branch: main
+  target_branch: main
+  finish: null
+loop:
+  stage: done
+  goal_cycle: 2
+  iteration: 3
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 2
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: null
+acceptance:
+  - id: A1
+    source: brief.md
+    text: "A1 — Editing, level 25600×720, view at the origin: press the left button
+      at the horizontal middle of the minimap → on the next frame the view is
+      centred on world x ≈ 12800 (`scroll_offset.x ≈ 12800 − panel_width/2`) and
+      `scroll_offset.y` is clamped to its reachable range; the yellow rectangle
+      now surrounds the pressed spot."
+    result: passed
+    reason:
+      text: minimap::offset_for_pointer maps inner.center() to world 12800 and
+        centre_offset subtracts panel/2 then clamps y to 0; test
+        a_press_on_the_minimap_jumps_the_view_and_kills_momentum and
+        a_press_in_the_middle_centres_the_view_on_the_level_middle assert
+        x≈12800−640 and y==0, and the renderer's view_rect is derived from the
+        same refreshed scroll_offset so it is centred on the pressed spot.
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: A2 — Press near the minimap's left / top edge (target centre less than
+      half a viewport from the origin) → `scroll_offset` is exactly 0 on that
+      axis, never negative. Press on the minimap's far edge → that level edge
+      sits at the centre of the view (`scroll_offset = level_size −
+      panel_size/2` on that axis); the offset never exceeds `level_size`, the
+      same bound arrow-key scrolling has.
+    result: passed
+    reason:
+      text: centre_offset clamps each axis to 0..=level (never negative, never past
+        level_size); tests the_offset_never_goes_negative_near_the_origin,
+        the_offset_never_passes_the_level_size_near_the_far_edge (off == level −
+        panel/2 at the far edge, == level when far beyond) and
+        dragging_across_the_thumbnail_sweeps_the_whole_level (right edge ⇒ 25600
+        − 640) cover both axes.
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: A3 — Press and, without releasing, drag across the minimap → the view
+      follows the pointer every frame while the button is held, including when
+      the pointer leaves the minimap rectangle mid-drag; releasing ends the
+      gesture. A drag that started on the canvas and merely passes over the
+      minimap does not move the view.
+    result: passed
+    reason:
+      text: minimap_drag is set only on primary_pressed() over map_rect and re-applies
+        layout.offset_for_pointer each frame while primary_down() (world_at
+        clamps off-box positions to inner); a canvas press never sets it — tests
+        the_gesture_is_consumed_through_the_release_frame_wherever_it_lands and
+        a_drag_that_started_on_the_canvas_does_not_move_the_view_over_the_minimap
+        pass.
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: "A4 — After any minimap press or drag the scroll velocity is zero: the
+      view does not glide on after the button is released, and pending arrow-key
+      momentum is discarded at the moment of the press."
+    result: passed
+    reason:
+      text: handle_minimap_pointer sets scroll.velocity = Vec2::ZERO on every drag
+        frame including the press frame, and runs after self.scroll.step(...) in
+        update; test asserts velocity is zero after a press that started with
+        velocity (900,0).
+      truncated: false
+  - id: A5
+    source: brief.md
+    text: A5 — With the Bitmap, Polygon, Select or Delete tool active, a click on
+      the minimap adds no entity, adds no polygon vertex, changes no selection
+      and deletes nothing; a click on the canvas outside the minimap still
+      behaves as before.
+    result: passed
+    reason:
+      text: pointer_over_ui returns true for minimap_drag or layout.contains(pos); the
+        central-panel click dispatch (spawn move, DrawPolygon, Bitmap, Select,
+        Erase) and the secondary-click path are all guarded by !help_click /
+        !secondary_over_help, so a minimap press reaches no tool; canvas clicks
+        outside map_rect hit the unchanged code.
+      truncated: false
+  - id: A6
+    source: brief.md
+    text: A6 — While play mode is running, pressing or dragging on the minimap
+      changes neither the view nor the spawn point; the camera keeps following
+      the character.
+    result: passed
+    reason:
+      text: In play mode handle_minimap_pointer performs only the gesture bookkeeping
+        then returns before touching scroll.offset, while pointer_over_ui still
+        consumes the click so the play-spawn branch (`self.play.is_some() &&
+        !toolbox_click && !help_click`) is skipped; test
+        the_minimap_ignores_the_mouse_while_playing_but_still_owns_the_spot
+        covers press and an off-box release.
+      truncated: false
+  - id: A7
+    source: brief.md
+    text: A7 — Hovering the minimap while editing shows a pointing-hand cursor; a
+      press does not change any level data and `has_unsaved_changes()` is
+      unaffected.
+    result: passed
+    reason:
+      text: Hovering map_rect while editing sets ctx.output_mut cursor_icon =
+        PointingHand (Grabbing during a drag), the handler writes only scroll
+        state, and test
+        a_minimap_press_drops_a_pending_entity_drag_and_leaves_the_level_alone
+        asserts entities hash and has_unsaved_changes() are unchanged.
+      truncated: false
+  - id: A8
+    source: brief.md
+    text: "A8 — Help → Keyboard & Commands: the Mouse section has a row for pressing
+      / dragging on the minimap, and the help module's completeness test asserts
+      it."
+    result: passed
+    reason:
+      text: help.rs adds HelpEntry 'Click / drag the minimap' to the mouse list and
+        mouse_section_covers_every_gesture asserts that needle.
+      truncated: false
+  - id: A9
+    source: brief.md
+    text: A9 — `cargo test` passes, including unit tests for the pure minimap layout
+      + point-to-offset mapping (centre, clamp at both ends, both axes) and the
+      help row.
+    result: passed
+    reason:
+      text: "cargo test re-run here: 168 unit tests + 1 integration test pass,
+        including minimap layout/mapping tests (centre, clamps at both ends,
+        both axes) and the help row test."
+      truncated: false
+  - id: A10
+    source: specs/canvas-scrolling/spec.md
+    text: "> Amended 2026-09-14 by the minimap-mouse-navigation change: the minimap
+      is now a second scroll input while editing — press / drag on it re-centres
+      the view instantly (see the `minimap-navigation` capability). Mouse input
+      on the canvas itself still does not scroll."
+    result: passed
+    reason:
+      text: "Amendment note present in the spec and implemented: minimap press/drag
+        re-centres instantly via handle_minimap_pointer; no mouse scrolling was
+        added on the canvas itself."
+      truncated: false
+  - id: A11
+    source: specs/canvas-scrolling/spec.md
+    text: "> Amended 2026-09-12 by the play-camera-containment change: the
+      non-negative offset invariant holds **while editing**. Play mode's camera
+      owns the offset and may take it negative so the character stays on screen;
+      see the `play-camera` capability."
+    result: passed
+    reason:
+      text: Play-mode camera path is untouched; the editing invariant is enforced by
+        ScrollModel::step and centre_offset clamps.
+      truncated: false
+  - id: A12
+    source: specs/canvas-scrolling/spec.md
+    text: Complete target behaviour of the level-editor canvas viewport after this
+      change is archived.
+    result: passed
+    reason:
+      text: Spec heading item; the capability's bullets are individually verified
+        below.
+      truncated: false
+  - id: A13
+    source: specs/canvas-scrolling/spec.md
+    text: The canvas shows a level in world coordinates anchored at the top-left
+      origin (0, 0), Y-down. This matches egui's convention; the Bevy
+      integration flips Y against `background_height` on import.
+    result: passed
+    reason:
+      text: Coordinate model untouched by the diff (no change to world/screen
+        conventions).
+      truncated: false
+  - id: A14
+    source: specs/canvas-scrolling/spec.md
+    text: "The viewport is described by `scroll_offset: Vec2` — the world position
+      visible at the top-left corner of the central canvas panel."
+    result: passed
+    reason:
+      text: scroll_offset field and semantics unchanged.
+      truncated: false
+  - id: A15
+    source: specs/canvas-scrolling/spec.md
+    text: "`screen = world − round(scroll_offset)` and `world = screen +
+      scroll_offset`."
+    result: passed
+    reason:
+      text: Conversions (pos + self.scroll_offset, translate(-scroll_offset)) are
+        untouched by the diff.
+      truncated: false
+  - id: A16
+    source: specs/canvas-scrolling/spec.md
+    text: "While editing, `0 ≤ scroll_offset ≤ level_size` on each axis, where
+      `level_size` is the resolved level extent (see `level-lifecycle`). The
+      upper bound is exactly one screen of slack: at it, the level's far edge
+      sits at the near edge of the viewport, so the user can still scroll a full
+      screen past the background image or the outermost entity and place
+      entities there. While play mode is running the camera owns the offset and
+      may take it outside that range, including negative, so a character at
+      negative world coordinates stays on screen; `ScrollModel` is not stepped
+      then, and both of its clamps are unchanged."
+    result: passed
+    reason:
+      text: scroll.rs is unchanged (git diff --stat shows no change); step clamps to
+        0..=max with the resolved level size, and minimap centre_offset clamps
+        to the same 0..=level; play mode still skips scroll.step.
+      truncated: false
+  - id: A17
+    source: specs/canvas-scrolling/spec.md
+    text: "`ArrowLeft` / `ArrowRight` scroll horizontally (−x / +x). `ArrowUp` /
+      `ArrowDown` scroll vertically (−y / +y). Opposite keys held together
+      cancel on that axis; perpendicular keys combine into diagonal scrolling."
+    result: passed
+    reason:
+      text: Arrow-key HeldDirs collection and ScrollModel axis handling are untouched;
+        scroll tests still pass.
+      truncated: false
+  - id: A18
+    source: specs/canvas-scrolling/spec.md
+    text: "On the canvas itself only arrow keys scroll. Mouse wheel, trackpad
+      gestures and drag-to-pan on the canvas do not scroll (out of scope for
+      this capability). The minimap is the one mouse scroll input: a press or
+      drag on it sets `scroll_offset` directly and zeroes the velocity, as
+      specified in `minimap-navigation`; the clamp to `0 ..= level_size` applies
+      to it exactly as to arrow-key scrolling."
+    result: passed
+    reason:
+      text: Only arrow keys and the minimap set the offset; minimap sets scroll.offset
+        directly, zeroes velocity and clamps via centre_offset to 0..=level,
+        identical bound to step().
+      truncated: false
+  - id: A19
+    source: specs/canvas-scrolling/spec.md
+    text: Arrow keys do not scroll while a text field has keyboard focus (egui's
+      `wants_keyboard_input`), preserving existing text-entry behaviour.
+    result: passed
+    reason:
+      text: held = HeldDirs::default() when ctx.wants_keyboard_input() is unchanged.
+      truncated: false
+  - id: A20
+    source: specs/canvas-scrolling/spec.md
+    text: "The scroll model is a pure struct independent of egui, advanced once per
+      frame with an explicit `dt` (seconds):"
+    result: passed
+    reason:
+      text: ScrollModel remains a pure struct stepped once per frame with stable_dt;
+        file unchanged.
+      truncated: false
+  - id: A21
+    source: specs/canvas-scrolling/spec.md
+    text: "**Acceleration while held.** For each axis with a held direction,
+      velocity accelerates toward `±MAX_SPEED` at a fixed rate `ACCEL` (px/s²),
+      reaching full speed in roughly 0.25 s. `MAX_SPEED` ≥ the previous fixed
+      600 px/s."
+    result: passed
+    reason:
+      text: scroll.rs constants and step_axis are unchanged and its unit tests
+        (acceleration, decay, origin stop, determinism) pass.
+      truncated: false
+  - id: A22
+    source: specs/canvas-scrolling/spec.md
+    text: "**Momentum on release.** When no key is held on an axis, that axis's
+      velocity decays exponentially (`v *= exp(−DECAY · dt)`) and is snapped to
+      exactly 0 once `|v|` falls below a small threshold (`STOP_SPEED`, ≈ 5
+      px/s). Constants are chosen so a full-speed release comes to rest in ≤ 1.5
+      s. There is no perpetual drift."
+    result: passed
+    reason:
+      text: scroll.rs constants and step_axis are unchanged and its unit tests
+        (acceleration, decay, origin stop, determinism) pass.
+      truncated: false
+  - id: A23
+    source: specs/canvas-scrolling/spec.md
+    text: "**Integration.** `offset += velocity · dt` each frame, then clamped: any
+      component `< 0` is set to 0 and that axis's velocity is set to 0 (momentum
+      stops at the origin; no bounce, no overshoot)."
+    result: passed
+    reason:
+      text: scroll.rs constants and step_axis are unchanged and its unit tests
+        (acceleration, decay, origin stop, determinism) pass.
+      truncated: false
+  - id: A24
+    source: specs/canvas-scrolling/spec.md
+    text: "**Determinism.** Given the same sequence of `(held_dirs, dt)` the model
+      produces the same offsets; this is what the unit tests exercise."
+    result: passed
+    reason:
+      text: scroll.rs constants and step_axis are unchanged and its unit tests
+        (acceleration, decay, origin stop, determinism) pass.
+      truncated: false
+  - id: A25
+    source: specs/canvas-scrolling/spec.md
+    text: While any arrow key is held **or** either velocity component is non-zero,
+      the app calls `ctx.request_repaint()` every frame so the motion advances
+      at display rate rather than OS key-repeat rate.
+    result: passed
+    reason:
+      text: update still calls ctx.request_repaint() when scroll.needs_repaint(held);
+        unchanged.
+      truncated: false
+  - id: A26
+    source: specs/canvas-scrolling/spec.md
+    text: When the canvas is at rest (no key held, zero velocity), no repaint is
+      requested by the scroll system; the editor returns to egui's reactive
+      repainting.
+    result: passed
+    reason:
+      text: The minimap requests a repaint only while primary_down() during its
+        gesture, so the at-rest policy is unchanged.
+      truncated: false
+  - id: A27
+    source: specs/canvas-scrolling/spec.md
+    text: "`dt` comes from `ctx.input(|i| i.stable_dt)`."
+    result: passed
+    reason:
+      text: let dt = ctx.input(|i| i.stable_dt) unchanged.
+      truncated: false
+  - id: A28
+    source: specs/canvas-scrolling/spec.md
+    text: Each frame computes one `pixel_offset = scroll_offset.round()` (an
+      integer-valued `Vec2`).
+    result: passed
+    reason:
+      text: self.scroll_offset = self.scroll.pixel_offset() each frame; the minimap
+        handler refreshes the same field from pixel_offset().
+      truncated: false
+  - id: A29
+    source: specs/canvas-scrolling/spec.md
+    text: The background painter, every entity draw, the in-progress polygon
+      preview, selection outlines and the placement ghost all subtract this same
+      `pixel_offset`. No renderer truncates or floors independently, so the
+      background never shimmers relative to entities.
+    result: passed
+    reason:
+      text: Renderers and mouse->world conversions are untouched by the diff and all
+        read self.scroll_offset.
+      truncated: false
+  - id: A30
+    source: specs/canvas-scrolling/spec.md
+    text: Mouse→world conversions for placement, polygon vertices, hit-testing and
+      dragging use `screen + pixel_offset` so that what the user clicks matches
+      what is drawn.
+    result: passed
+    reason:
+      text: Renderers and mouse->world conversions are untouched by the diff and all
+        read self.scroll_offset.
+      truncated: false
+  - id: A31
+    source: specs/canvas-scrolling/spec.md
+    text: "`BackgroundImageController::draw` takes the full `Vec2` pixel offset and
+      draws the image at screen position `(−offset.x, −offset.y)` in 1:1
+      pixels."
+    result: passed
+    reason:
+      text: src/background.rs is unchanged (MAX_TILE_EDGE 8192 tiling, draw(ctx,
+        offset, viewport, painter)); its tests pass.
+      truncated: false
+  - id: A32
+    source: specs/canvas-scrolling/spec.md
+    text: The image is split into a 2-D grid of tiles. Tile width and height are
+      each `min(dimension, 8192)`, so no texture exceeds 8192 px in either axis.
+      Tiles are addressed by `(col, row)`.
+    result: passed
+    reason:
+      text: src/background.rs is unchanged (MAX_TILE_EDGE 8192 tiling, draw(ctx,
+        offset, viewport, painter)); its tests pass.
+      truncated: false
+  - id: A33
+    source: specs/canvas-scrolling/spec.md
+    text: Only tiles intersecting the visible panel, plus a one-tile margin on each
+      side, are uploaded and drawn; tiles that scroll out of that window are
+      released. Tiles already resident for the current window are reused, never
+      re-uploaded.
+    result: passed
+    reason:
+      text: src/background.rs is unchanged (MAX_TILE_EDGE 8192 tiling, draw(ctx,
+        offset, viewport, painter)); its tests pass.
+      truncated: false
+  - id: A34
+    source: specs/canvas-scrolling/spec.md
+    text: Areas of the canvas beyond the image's right or bottom edge (reachable
+      because scrolling is unbounded) show the panel's plain background colour;
+      no tile is drawn there and no error is logged.
+    result: passed
+    reason:
+      text: src/background.rs is unchanged (MAX_TILE_EDGE 8192 tiling, draw(ctx,
+        offset, viewport, painter)); its tests pass.
+      truncated: false
+  - id: A35
+    source: specs/canvas-scrolling/spec.md
+    text: When no background image is loaded, nothing is drawn by the background
+      painter and scrolling behaves identically.
+    result: passed
+    reason:
+      text: src/background.rs is unchanged (MAX_TILE_EDGE 8192 tiling, draw(ctx,
+        offset, viewport, painter)); its tests pass.
+      truncated: false
+  - id: A36
+    source: specs/canvas-scrolling/spec.md
+    text: The minimap thumbnail is unaffected by tiling.
+    result: passed
+    reason:
+      text: Minimap thumbnail still comes from bg.minimap_texture(ctx), unchanged.
+      truncated: false
+  - id: A37
+    source: specs/canvas-scrolling/spec.md
+    text: The minimap's viewport rectangle is positioned from `scroll_offset` on
+      both axes and sized from the panel dimensions, scaled to the minimap. It
+      is clipped to the minimap bounds when the viewport is beyond the level's
+      known extent (background size, or entity bounding box when no background
+      is loaded).
+    result: passed
+    reason:
+      text: view_rect computation (inner.min + scroll*scale, panel size scaled,
+        intersect(inner)) is unchanged in render_level_minimap.
+      truncated: false
+  - id: A38
+    source: specs/canvas-scrolling/spec.md
+    text: The minimap's rectangle and inner image rectangle come from one pure
+      layout function shared with the hit-test in `minimap-navigation`, so the
+      drawn box and the clickable box are identical.
+    result: passed
+    reason:
+      text: minimap::layout is called once per frame in update (canvas_panel =
+        ctx.available_rect()), stored in self.minimap_layout, and that same
+        value is both used by pointer_over_ui/handle_minimap_pointer and passed
+        to render_level_minimap.
+      truncated: false
+  - id: A39
+    source: specs/canvas-scrolling/spec.md
+    text: "`scroll_offset` is view state only; it is not written to the level file.
+      The level format (`LevelData` with optional `background_size`) is
+      unchanged by this capability."
+    result: passed
+    reason:
+      text: minimap_layout and minimap_drag are plain EditorState fields, not part of
+        LevelData; serialisation untouched.
+      truncated: false
+  - id: A40
+    source: specs/canvas-scrolling/spec.md
+    text: The debug export continues to record the current `scroll_offset` for both
+      axes.
+    result: passed
+    reason:
+      text: render_level_minimap still passes scroll_offset into
+        MinimapDebugSnapshot::full.
+      truncated: false
+  - id: A41
+    source: specs/canvas-scrolling/spec.md
+    text: A1 — Holding `ArrowDown` increases `scroll_offset.y` and moves background
+      and entities upward on screen; `ArrowUp` reverses.
+    result: passed
+    reason:
+      text: Arrow-key handling code is unchanged and scroll tests pass.
+      truncated: false
+  - id: A42
+    source: specs/canvas-scrolling/spec.md
+    text: A2 — Holding `ArrowRight` / `ArrowLeft` increases / decreases
+      `scroll_offset.x` exactly as before.
+    result: passed
+    reason:
+      text: Arrow-key handling code is unchanged and scroll tests pass.
+      truncated: false
+  - id: A43
+    source: specs/canvas-scrolling/spec.md
+    text: A3 — Scrolling continues past the background's right/bottom edges and past
+      all entities, with a 25600×720 background and with no background at all; a
+      bitmap placed in that space receives a world position beyond those
+      extents.
+    result: passed
+    reason:
+      text: Upper bound remains level_size (one screen of slack); centre_offset uses
+        the same bound; no diff to placement code.
+      truncated: false
+  - id: A44
+    source: specs/canvas-scrolling/spec.md
+    text: A4 — While editing, `scroll_offset` components are never negative;
+      momentum toward the origin stops exactly at 0. (Play mode's camera is the
+      stated exception.)
+    result: passed
+    reason:
+      text: step_axis origin clamp unchanged; centre_offset clamps at 0 too (test
+        the_offset_never_goes_negative_near_the_origin).
+      truncated: false
+  - id: A45
+    source: specs/canvas-scrolling/spec.md
+    text: A5 — A repaint is requested every frame while a key is held or velocity is
+      non-zero.
+    result: passed
+    reason:
+      text: Repaint policy and decay constants are unchanged; scroll tests
+        release_keeps_moving_then_stops_within_1_5_seconds etc. pass.
+      truncated: false
+  - id: A46
+    source: specs/canvas-scrolling/spec.md
+    text: A6 — After release, velocity decays to exactly zero within 1.5 s and never
+      re-accelerates on its own.
+    result: passed
+    reason:
+      text: Repaint policy and decay constants are unchanged; scroll tests
+        release_keeps_moving_then_stops_within_1_5_seconds etc. pass.
+      truncated: false
+  - id: A47
+    source: specs/canvas-scrolling/spec.md
+    text: A7 — Background and entities use one shared rounded integer-pixel offset
+      per frame.
+    result: passed
+    reason:
+      text: Single pixel_offset per frame still shared; the minimap handler refreshes
+        it via scroll.pixel_offset().
+      truncated: false
+  - id: A48
+    source: specs/canvas-scrolling/spec.md
+    text: A8 — Background draws offset by `−scroll_offset.y`; no tile exceeds 8192
+      px in either dimension; an image taller than 8192 px yields more than one
+      tile row.
+    result: passed
+    reason:
+      text: background.rs untouched; its tiling tests pass.
+      truncated: false
+  - id: A49
+    source: specs/canvas-scrolling/spec.md
+    text: A9 — Mouse→world for placement, vertices and hit-testing equals `screen +
+      offset` on both axes.
+    result: passed
+    reason:
+      text: Mouse->world conversions unchanged (pos + self.scroll_offset).
+      truncated: false
+  - id: A50
+    source: specs/canvas-scrolling/spec.md
+    text: A10 — The minimap viewport rectangle tracks `scroll_offset` on both axes.
+    result: passed
+    reason:
+      text: view_rect uses scroll_offset.x and .y unchanged.
+      truncated: false
+  - id: A51
+    source: specs/editor-help-screen/spec.md
+    text: Complete target behaviour of the in-app help screen.
+    result: passed
+    reason:
+      text: Spec heading; bullets verified individually.
+      truncated: false
+  - id: A52
+    source: specs/editor-help-screen/spec.md
+    text: "> Amended 2026-09-14 by the minimap-mouse-navigation change: the Mouse
+      section gained a row for pressing / dragging on the minimap. The
+      completeness guarantee is unchanged."
+    result: passed
+    reason:
+      text: Mouse section gained the minimap row; other help content is unchanged and
+        its exact-list tests still pass.
+      truncated: false
+  - id: A53
+    source: specs/editor-help-screen/spec.md
+    text: "> Amended 2026-09-12 by the play-combat-simulation change: the Keyboard
+      section gained the attack, shield and debug keys (`J`/`X`, `L`, `F2`) and
+      the `R` row now describes restarting the run."
+    result: passed
+    reason:
+      text: Keyboard list and Menus section are unchanged by the diff; their
+        exact-match tests pass.
+      truncated: false
+  - id: A54
+    source: specs/editor-help-screen/spec.md
+    text: "> Amended 2026-09-12 by the level-size-and-play-simulation change: the
+      Keyboard section gained the play-mode keys, the Mouse section a play-mode
+      click row, and the former four-item \"File menu\" section became a
+      \"Menus\" section covering the File, Level, Play and Help menus. The
+      help's guarantee — it lists every key and command the editor handles — is
+      unchanged."
+    result: passed
+    reason:
+      text: Keyboard list and Menus section are unchanged by the diff; their
+        exact-match tests pass.
+      truncated: false
+  - id: A55
+    source: specs/editor-help-screen/spec.md
+    text: The menu bar has a `Help` menu to the right of `File`. Its single item,
+      `Keyboard & Commands`, opens the help window (and closes the menu).
+    result: passed
+    reason:
+      text: main.rs Help menu with 'Keyboard & Commands' button at line ~1268
+        unchanged.
+      truncated: false
+  - id: A56
+    source: specs/editor-help-screen/spec.md
+    text: "`F1` toggles the help window. `?` (`egui::Key::Questionmark`, i.e.
+      Shift+/) toggles it too. Both toggles are ignored while a text field wants
+      keyboard input (`ctx.wants_keyboard_input()`)."
+    result: passed
+    reason:
+      text: F1 / Questionmark toggle guarded by !ctx.wants_keyboard_input() unchanged.
+      truncated: false
+  - id: A57
+    source: specs/editor-help-screen/spec.md
+    text: The window's title-bar close button closes it.
+    result: passed
+    reason:
+      text: Help egui::Window with open flag unchanged.
+      truncated: false
+  - id: A58
+    source: specs/editor-help-screen/spec.md
+    text: "`Escape` has a strict priority order: if the help window is open, one
+      press closes it and that press is fully consumed — it does not cancel a
+      polygon in progress or leave polygon edit mode. If the help window is
+      closed, `Escape` behaves exactly as before (cancel polygon drawing, else
+      exit polygon edit mode)."
+    result: passed
+    reason:
+      text: Escape dispatch via escape_closes_help unchanged; help tests
+        escape_closes_help_* pass.
+      truncated: false
+  - id: A59
+    source: specs/editor-help-screen/spec.md
+    text: "Help state (`help_open: bool`) is editor view state: it is not saved to
+      the level file, not restored between runs, and does not affect
+      `has_unsaved_changes()`."
+    result: passed
+    reason:
+      text: help_open remains view state; untouched.
+      truncated: false
+  - id: A60
+    source: specs/editor-help-screen/spec.md
+    text: "A floating `egui::Window` titled `Keyboard & Commands`, draggable and
+      resizable, non-modal: while it is open the canvas, toolbox, menus,
+      arrow-key scrolling and every other command keep working; only clicks
+      inside the window are captured by it."
+    result: passed
+    reason:
+      text: Help window construction and ScrollArea untouched by the diff.
+      truncated: false
+  - id: A61
+    source: specs/editor-help-screen/spec.md
+    text: The body is a vertical `ScrollArea` with a bounded maximum height (≈ 70%
+      of the screen height) so the whole window remains on screen at the
+      editor's minimum size of 800×720 and long content is scrolled rather than
+      clipped.
+    result: passed
+    reason:
+      text: Help window construction and ScrollArea untouched by the diff.
+      truncated: false
+  - id: A62
+    source: specs/editor-help-screen/spec.md
+    text: "Sections appear in this order with a heading each: **Keyboard**,
+      **Mouse**, **Tools**, **Menus**. Each entry is a two-column row: the key /
+      gesture / tool on the left, its effect on the right."
+    result: passed
+    reason:
+      text: Help window construction and ScrollArea untouched by the diff.
+      truncated: false
+  - id: A63
+    source: specs/editor-help-screen/spec.md
+    text: "Lists every key the input handler responds to, and nothing else:"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A64
+    source: specs/editor-help-screen/spec.md
+    text: "| Key | Effect |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A65
+    source: specs/editor-help-screen/spec.md
+    text: "| ← → ↑ ↓ | Scroll the canvas. Hold to accelerate; release to glide to a
+      stop. |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A66
+    source: specs/editor-help-screen/spec.md
+    text: "| Enter | Finish the polygon being drawn (needs ≥ 3 vertices). |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A67
+    source: specs/editor-help-screen/spec.md
+    text: "| Escape | Close this help; otherwise cancel the polygon being drawn or
+      leave polygon edit mode. |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A68
+    source: specs/editor-help-screen/spec.md
+    text: "| Delete / Backspace | Remove the selected vertex of the polygon being
+      edited (a polygon keeps at least 3). |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A69
+    source: specs/editor-help-screen/spec.md
+    text: "| Undo | Undo the last change. |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A70
+    source: specs/editor-help-screen/spec.md
+    text: "| Redo | Redo the last undone change. |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A71
+    source: specs/editor-help-screen/spec.md
+    text: "| F1 / ? | Show or hide this help. |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A72
+    source: specs/editor-help-screen/spec.md
+    text: "| F5 | Start or stop play mode. |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A73
+    source: specs/editor-help-screen/spec.md
+    text: "| R | Respawn the character at the spawn point (play mode). |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A74
+    source: specs/editor-help-screen/spec.md
+    text: "| A / D or ← / → | Move the character left and right (play mode). |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A75
+    source: specs/editor-help-screen/spec.md
+    text: "| W / S or ↑ / ↓ | Look up and down; down also fast-falls and climbs down
+      (play mode). |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A76
+    source: specs/editor-help-screen/spec.md
+    text: "| Space or Z | Jump, and wall jump off a wall (play mode). |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A77
+    source: specs/editor-help-screen/spec.md
+    text: "| Shift, K or C | Dash (play mode). |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A78
+    source: specs/editor-help-screen/spec.md
+    text: "| J or X | Swing the katana; hold up or down to slash that way (play
+      mode). |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A79
+    source: specs/editor-help-screen/spec.md
+    text: "| L | Raise the shield: 2 s invulnerable, then a 5 s cooldown (play
+      mode). |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A80
+    source: specs/editor-help-screen/spec.md
+    text: "| F2 | Show or hide the combat debug view (slash hitbox, orc ranges). |"
+    result: passed
+    reason:
+      text: Keyboard entries in help.rs are unchanged and the exact-list keyboard test
+        passes.
+      truncated: false
+  - id: A81
+    source: specs/editor-help-screen/spec.md
+    text: Undo / Redo labels are produced by `egui::Context::format_shortcut` for
+      `Cmd+Z` and `Shift+Cmd+Z` (`Modifiers::COMMAND`, `Modifiers::COMMAND |
+      Modifiers::SHIFT`), so macOS shows ⌘Z / ⇧⌘Z and other platforms show
+      Ctrl+Z / Shift+Ctrl+Z.
+    result: passed
+    reason:
+      text: Undo/redo labels still supplied by the caller from format_shortcut; test
+        undo_and_redo_labels_come_from_the_caller passes.
+      truncated: false
+  - id: A82
+    source: specs/editor-help-screen/spec.md
+    text: "| Gesture | Effect |"
+    result: passed
+    reason:
+      text: Existing mouse rows are unchanged and asserted by
+        mouse_section_covers_every_gesture.
+      truncated: false
+  - id: A83
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click (play mode) | Move the spawn point and respawn the character
+      there. The level is never changed while playing. |"
+    result: passed
+    reason:
+      text: Existing mouse rows are unchanged and asserted by
+        mouse_section_covers_every_gesture.
+      truncated: false
+  - id: A84
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — Select tool | Select the entity under the cursor; drag to
+      move it. Click empty canvas to deselect. |"
+    result: passed
+    reason:
+      text: Existing mouse rows are unchanged and asserted by
+        mouse_section_covers_every_gesture.
+      truncated: false
+  - id: A85
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — Delete tool | Remove the entity under the cursor. |"
+    result: passed
+    reason:
+      text: Existing mouse rows are unchanged and asserted by
+        mouse_section_covers_every_gesture.
+      truncated: false
+  - id: A86
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — polygon tools | Add a vertex at the cursor. |"
+    result: passed
+    reason:
+      text: Existing mouse rows are unchanged and asserted by
+        mouse_section_covers_every_gesture.
+      truncated: false
+  - id: A87
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — bitmap tools | Place the sprite at the cursor (a
+      translucent preview follows the cursor). |"
+    result: passed
+    reason:
+      text: Existing mouse rows are unchanged and asserted by
+        mouse_section_covers_every_gesture.
+      truncated: false
+  - id: A88
+    source: specs/editor-help-screen/spec.md
+    text: "| Double-click — polygon tool | Close and finish the polygon (needs ≥ 3
+      vertices). |"
+    result: passed
+    reason:
+      text: Existing mouse rows are unchanged and asserted by
+        mouse_section_covers_every_gesture.
+      truncated: false
+  - id: A89
+    source: specs/editor-help-screen/spec.md
+    text: "| Double-click — Select tool on a polygon | Enter vertex-edit mode for
+      that polygon. |"
+    result: passed
+    reason:
+      text: Existing mouse rows are unchanged and asserted by
+        mouse_section_covers_every_gesture.
+      truncated: false
+  - id: A90
+    source: specs/editor-help-screen/spec.md
+    text: "| Right click — polygon tool | Finish the polygon being drawn. |"
+    result: passed
+    reason:
+      text: Existing mouse rows are unchanged and asserted by
+        mouse_section_covers_every_gesture.
+      truncated: false
+  - id: A91
+    source: specs/editor-help-screen/spec.md
+    text: "| Drag (edit mode) | Move the selected vertex; click a vertex first to
+      select it. |"
+    result: passed
+    reason:
+      text: Existing mouse rows are unchanged and asserted by
+        mouse_section_covers_every_gesture.
+      truncated: false
+  - id: A92
+    source: specs/editor-help-screen/spec.md
+    text: "| Click outside the polygon (edit mode) | Leave vertex-edit mode. |"
+    result: passed
+    reason:
+      text: Existing mouse rows are unchanged and asserted by
+        mouse_section_covers_every_gesture.
+      truncated: false
+  - id: A93
+    source: specs/editor-help-screen/spec.md
+    text: "| Drag the toolbox | Move the toolbox anywhere on screen. |"
+    result: passed
+    reason:
+      text: Existing mouse rows are unchanged and asserted by
+        mouse_section_covers_every_gesture.
+      truncated: false
+  - id: A94
+    source: specs/editor-help-screen/spec.md
+    text: "| Click / drag the minimap | Jump the view to that part of the level;
+      keep the button down and drag to scroll it live. |"
+    result: passed
+    reason:
+      text: help.rs now has HelpEntry('Click / drag the minimap', 'Jump the view to
+        that part of the level; keep the button down and drag to scroll it
+        live.').
+      truncated: false
+  - id: A95
+    source: specs/editor-help-screen/spec.md
+    text: "Generated at runtime from `ToolboxLayout.tools` (`src/toolboxes.json`).
+      Every tool appears exactly once, in file order, as: humanised name (e.g.
+      `coin_tool` → `Coin`, `death_trap_tool` → `Death trap`), its
+      `description`, and its kind (`bitmap` — click to place a sprite; `polygon`
+      — click vertices, Enter / double-click / right-click to finish; `tool` — a
+      mode)."
+    result: passed
+    reason:
+      text: Tools section generation, is_tool_implemented and the failed-load line are
+        untouched.
+      truncated: false
+  - id: A96
+    source: specs/editor-help-screen/spec.md
+    text: A tool of kind `tool` whose name is neither `select_tool` nor
+      `delete_tool` is not implemented by the editor (it currently falls through
+      to Select); its entry ends with **"— not yet implemented"**. This is
+      derived from the same rule the editor uses to map tool names to modes, not
+      from a hand-maintained list.
+    result: passed
+    reason:
+      text: Tools section generation, is_tool_implemented and the failed-load line are
+        untouched.
+      truncated: false
+  - id: A97
+    source: specs/editor-help-screen/spec.md
+    text: If the toolbox layout failed to load, the section shows a single line
+      saying the toolbox could not be loaded, rather than being empty.
+    result: passed
+    reason:
+      text: Tools section generation, is_tool_implemented and the failed-load line are
+        untouched.
+      truncated: false
+  - id: A98
+    source: specs/editor-help-screen/spec.md
+    text: "Lists every item in every menu, prefixed by its menu name:"
+    result: passed
+    reason:
+      text: Menus entries unchanged;
+        menu_section_lists_every_menu_item_and_the_exit_prompt passes.
+      truncated: false
+  - id: A99
+    source: specs/editor-help-screen/spec.md
+    text: "| Item | Effect |"
+    result: passed
+    reason:
+      text: Menus entries unchanged;
+        menu_section_lists_every_menu_item_and_the_exit_prompt passes.
+      truncated: false
+  - id: A100
+    source: specs/editor-help-screen/spec.md
+    text: "| File → New Level | Start an empty level; asks whether to save first
+      when there are unsaved changes. |"
+    result: passed
+    reason:
+      text: Menus entries unchanged;
+        menu_section_lists_every_menu_item_and_the_exit_prompt passes.
+      truncated: false
+  - id: A101
+    source: specs/editor-help-screen/spec.md
+    text: "| File → Background Image | Choose a PNG to show behind the level. |"
+    result: passed
+    reason:
+      text: Menus entries unchanged;
+        menu_section_lists_every_menu_item_and_the_exit_prompt passes.
+      truncated: false
+  - id: A102
+    source: specs/editor-help-screen/spec.md
+    text: "| File → Load Level | Open a level JSON file. |"
+    result: passed
+    reason:
+      text: Menus entries unchanged;
+        menu_section_lists_every_menu_item_and_the_exit_prompt passes.
+      truncated: false
+  - id: A103
+    source: specs/editor-help-screen/spec.md
+    text: "| File → Save Level | Write the level JSON file. |"
+    result: passed
+    reason:
+      text: Menus entries unchanged;
+        menu_section_lists_every_menu_item_and_the_exit_prompt passes.
+      truncated: false
+  - id: A104
+    source: specs/editor-help-screen/spec.md
+    text: "| File → Exit | Quit; asks whether to save first when there are unsaved
+      changes. |"
+    result: passed
+    reason:
+      text: Menus entries unchanged;
+        menu_section_lists_every_menu_item_and_the_exit_prompt passes.
+      truncated: false
+  - id: A105
+    source: specs/editor-help-screen/spec.md
+    text: "| Level → Level Size… | Set the level's width and height in pixels; saved
+      with the level. |"
+    result: passed
+    reason:
+      text: Menus entries unchanged;
+        menu_section_lists_every_menu_item_and_the_exit_prompt passes.
+      truncated: false
+  - id: A106
+    source: specs/editor-help-screen/spec.md
+    text: "| Play → Play / Stop | Start or stop play mode (same as F5). |"
+    result: passed
+    reason:
+      text: Menus entries unchanged;
+        menu_section_lists_every_menu_item_and_the_exit_prompt passes.
+      truncated: false
+  - id: A107
+    source: specs/editor-help-screen/spec.md
+    text: "| Help → Keyboard & Commands | Show this window. |"
+    result: passed
+    reason:
+      text: Menus entries unchanged;
+        menu_section_lists_every_menu_item_and_the_exit_prompt passes.
+      truncated: false
+  - id: A108
+    source: specs/editor-help-screen/spec.md
+    text: "Content is built by a pure `help` module: `HelpContent::build(tools:
+      Option<&[ToolDef]>, undo_label: &str, redo_label: &str) -> HelpContent`
+      with `keyboard`, `mouse`, `tools`, `file` entry lists, plus
+      `humanize_tool_name` and `is_tool_implemented` helpers, and
+      `escape_closes_help(help_open) -> bool`. The module has no egui `Context`
+      / `Ui` dependency so completeness is unit-tested."
+    result: passed
+    reason:
+      text: HelpContent::build(tools, undo_label, redo_label), humanize_tool_name,
+        is_tool_implemented and escape_closes_help exist in help.rs with no egui
+        Context/Ui dependency.
+      truncated: false
+  - id: A109
+    source: specs/editor-help-screen/spec.md
+    text: "`main.rs` owns `help_open`, renders the window from `HelpContent`, and
+      wires the menu item, `F1`, `?` and the Escape priority."
+    result: passed
+    reason:
+      text: main.rs still owns help_open and wires the menu item, F1, ? and Escape
+        priority (unchanged).
+      truncated: false
+  - id: A110
+    source: specs/editor-help-screen/spec.md
+    text: A1 — `Help → Keyboard & Commands` opens the help window.
+    result: passed
+    reason:
+      text: Help open/toggle/Escape/non-modal wiring in main.rs is untouched by the
+        diff.
+      truncated: false
+  - id: A111
+    source: specs/editor-help-screen/spec.md
+    text: A2 — `F1` and `?` each toggle the help window.
+    result: passed
+    reason:
+      text: Help open/toggle/Escape/non-modal wiring in main.rs is untouched by the
+        diff.
+      truncated: false
+  - id: A112
+    source: specs/editor-help-screen/spec.md
+    text: A3 — With help open, `Escape` closes it and does not cancel a polygon /
+      edit mode; with help closed, `Escape` behaves as before.
+    result: passed
+    reason:
+      text: Help open/toggle/Escape/non-modal wiring in main.rs is untouched by the
+        diff.
+      truncated: false
+  - id: A113
+    source: specs/editor-help-screen/spec.md
+    text: A4 — The window is closable, draggable and non-modal; arrow-key scrolling
+      and canvas clicks keep working while it is open.
+    result: passed
+    reason:
+      text: Help open/toggle/Escape/non-modal wiring in main.rs is untouched by the
+        diff.
+      truncated: false
+  - id: A114
+    source: specs/editor-help-screen/spec.md
+    text: A5 — Keyboard section lists every key the editor handles — Arrow keys,
+      Enter, Escape, Delete/Backspace, Undo, Redo, F1 / ?, F5, R, the play-mode
+      movement keys and the combat keys `J`/`X`, `L` and `F2` — and nothing the
+      editor does not handle.
+    result: passed
+    reason:
+      text: Keyboard list and label sourcing unchanged; tests pass.
+      truncated: false
+  - id: A115
+    source: specs/editor-help-screen/spec.md
+    text: A6 — Undo/Redo labels come from `format_shortcut` (⌘ on macOS, Ctrl
+      elsewhere).
+    result: passed
+    reason:
+      text: Keyboard list and label sourcing unchanged; tests pass.
+      truncated: false
+  - id: A116
+    source: specs/editor-help-screen/spec.md
+    text: A7 — Mouse section covers left click per tool, both double-click meanings,
+      right-click, entity / vertex / toolbox drag, click-outside-to-exit-edit,
+      and click / drag on the minimap.
+    result: passed
+    reason:
+      text: Mouse section now contains every listed gesture including 'Click / drag
+        the minimap'; test asserts all twelve.
+      truncated: false
+  - id: A117
+    source: specs/editor-help-screen/spec.md
+    text: A8 — Tools section lists every `toolboxes.json` tool exactly once with
+      description and kind; `add_point_tool` / `remove_point_tool` flagged "not
+      yet implemented"; `select_tool` / `delete_tool` not flagged.
+    result: passed
+    reason:
+      text: Tools and Menus sections untouched; their tests pass.
+      truncated: false
+  - id: A118
+    source: specs/editor-help-screen/spec.md
+    text: A9 — Menus section lists every item of the File, Level, Play and Help
+      menus, noting Exit's unsaved-changes prompt.
+    result: passed
+    reason:
+      text: Tools and Menus sections untouched; their tests pass.
+      truncated: false
+  - id: A119
+    source: specs/editor-help-screen/spec.md
+    text: A10 — Body is in a bounded vertical `ScrollArea`; window fits at 800×720.
+    result: passed
+    reason:
+      text: ScrollArea/window sizing and view-only help state unchanged.
+      truncated: false
+  - id: A120
+    source: specs/editor-help-screen/spec.md
+    text: "A11 — Help state is view-only: not serialised, no effect on
+      unsaved-changes."
+    result: passed
+    reason:
+      text: ScrollArea/window sizing and view-only help state unchanged.
+      truncated: false
+  - id: A121
+    source: specs/minimap-navigation/spec.md
+    text: Complete target behaviour of the bottom-right navigation box (the minimap)
+      as a mouse control. The minimap's drawing (thumbnail, yellow viewport
+      rectangle, placement and sizing) is described in `canvas-scrolling`; this
+      capability adds input to it.
+    result: passed
+    reason:
+      text: Spec heading; the drawing code path is unchanged apart from taking the
+        shared layout.
+      truncated: false
+  - id: A122
+    source: specs/minimap-navigation/spec.md
+    text: A pure function computes the minimap's on-screen rectangle (`map_rect`)
+      and its inner image rectangle (`inner`, `map_rect` shrunk by the 4 px
+      frame) from the central panel rect and the resolved level extent, using
+      exactly the sizing rules the renderer uses today (16 px margin, 220 px
+      longest edge, 100 px minimum short edge, clamped to the panel and screen).
+      The renderer and the hit-test both call this function in the same frame,
+      so what is drawn and what is clickable are the same rectangle.
+    result: passed
+    reason:
+      text: minimap::layout reproduces the renderer's former rules verbatim (MARGIN
+        16, MAX_DIM 220, MIN_SIDE 100, panel/screen clamps) and the renderer now
+        consumes the same MinimapLayout value computed in update.
+      truncated: false
+  - id: A123
+    source: specs/minimap-navigation/spec.md
+    text: "`inner` maps linearly to level space: minimap point `p` ↦ world `((p.x −
+      inner.min.x) / inner.width() · level.x, (p.y − inner.min.y) /
+      inner.height() · level.y)`."
+    result: passed
+    reason:
+      text: MinimapLayout::world_at computes ((p−inner.min)/inner.size)·level after
+        clamping to inner; test
+        the_middle_of_the_thumbnail_is_the_middle_of_the_level.
+      truncated: false
+  - id: A124
+    source: specs/minimap-navigation/spec.md
+    text: "**Press.** A left-button press whose position lies inside `map_rect`
+      while editing starts a minimap gesture. The view is re-centred on the
+      corresponding world point immediately (this frame)."
+    result: passed
+    reason:
+      text: primary_pressed() && layout.contains(pos) arms minimap_drag and, while
+        editing, the same frame sets scroll.offset = offset_for_pointer(pos).
+      truncated: false
+  - id: A125
+    source: specs/minimap-navigation/spec.md
+    text: "**Drag.** While the button stays down after such a press, every frame
+      re-centres the view on the world point under the current pointer position,
+      using the same mapping, even if the pointer has moved outside `map_rect`.
+      Positions are clamped to `inner` before mapping so the drag can pin the
+      view to a level edge."
+    result: passed
+    reason:
+      text: Every frame with minimap_drag && primary_down() re-applies
+        offset_for_pointer(interact_pos), whose world_at clamps to inner first.
+      truncated: false
+  - id: A126
+    source: specs/minimap-navigation/spec.md
+    text: "**Release.** Releasing the button ends the gesture. A press that started
+      outside `map_rect` (on the canvas, toolbox, a window or menu) never
+      becomes a minimap gesture, even if it passes over the minimap."
+    result: passed
+    reason:
+      text: minimap_drag is set only on the press frame when over map_rect and cleared
+        the frame after release; a press elsewhere never sets it (test
+        a_drag_that_started_on_the_canvas_does_not_move_the_view_over_the_minimap).
+      truncated: false
+  - id: A127
+    source: specs/minimap-navigation/spec.md
+    text: Press and drag on the 4 px frame count as being on the minimap (they are
+      inside `map_rect`) and map to the nearest `inner` edge.
+    result: passed
+    reason:
+      text: contains() uses map_rect (frame included) and world_at clamps to inner;
+        tests contains_covers_the_frame_too and
+        points_off_the_thumbnail_clamp_to_the_nearest_edge.
+      truncated: false
+  - id: A128
+    source: specs/minimap-navigation/spec.md
+    text: Re-centring sets `scroll.offset = world − panel_size / 2` and then clamps
+      each axis to `0 ..= level_size` (the same reachable range as arrow-key
+      scrolling, see `canvas-scrolling`). The result is applied instantly; no
+      easing.
+    result: passed
+    reason:
+      text: "centre_offset: raw = world − panel_size/2, then clamp(0, level) per axis;
+        applied directly with no easing."
+      truncated: false
+  - id: A129
+    source: specs/minimap-navigation/spec.md
+    text: "`scroll.velocity` is set to zero on the press and remains zero throughout
+      the gesture, so any arrow-key momentum is discarded and the view does not
+      glide after release."
+    result: passed
+    reason:
+      text: scroll.velocity = Vec2::ZERO on the press frame and every drag frame; the
+        handler runs after scroll.step so nothing re-adds momentum before
+        release.
+      truncated: false
+  - id: A130
+    source: specs/minimap-navigation/spec.md
+    text: "`scroll_offset` (the integer pixel offset every renderer reads) is
+      refreshed in the same frame, so the yellow viewport rectangle and the
+      canvas move together."
+    result: passed
+    reason:
+      text: Handler writes self.scroll_offset = self.scroll.pixel_offset() in the same
+        frame, and render_level_minimap reads self.scroll_offset later that
+        frame.
+      truncated: false
+  - id: A131
+    source: specs/minimap-navigation/spec.md
+    text: A repaint is requested every frame while the gesture is active so the drag
+      feels continuous.
+    result: passed
+    reason:
+      text: ctx.request_repaint() is called on every frame where dragging is true.
+      truncated: false
+  - id: A132
+    source: specs/minimap-navigation/spec.md
+    text: "A press on the minimap is consumed: it does not place a sprite, add a
+      polygon vertex, select, deselect, start dragging or delete an entity,
+      enter or leave vertex-edit mode, or move the play spawn point. Canvas
+      clicks outside `map_rect` are unchanged."
+    result: passed
+    reason:
+      text: pointer_over_ui includes minimap_drag || layout.contains(pos) and guards
+        the whole pointer_clicked branch (spawn move, place, vertex,
+        select/deselect, drag arm, edit-mode enter/leave, delete) plus the
+        secondary-click path; test
+        the_gesture_is_consumed_through_the_release_frame_wherever_it_lands.
+      truncated: false
+  - id: A133
+    source: specs/minimap-navigation/spec.md
+    text: Level data is never modified; `has_unsaved_changes()` is unaffected;
+      nothing is written to the level file.
+    result: passed
+    reason:
+      text: The handler only touches scroll/minimap fields and drops armed drags;
+        entity hash and has_unsaved_changes() asserted unchanged in tests.
+      truncated: false
+  - id: A134
+    source: specs/minimap-navigation/spec.md
+    text: While play mode is running, the minimap ignores presses and drags (the
+      play camera owns the offset). The press is still consumed so it cannot
+      relocate the spawn point.
+    result: passed
+    reason:
+      text: Play-mode early return sits after the bookkeeping that arms minimap_drag
+        and drops entity/vertex drags, so the view is untouched while
+        pointer_over_ui still consumes the press and the off-box release; test
+        covers it.
+      truncated: false
+  - id: A135
+    source: specs/minimap-navigation/spec.md
+    text: While hovering `map_rect` during editing the cursor is the pointing hand
+      (`egui::CursorIcon::PointingHand`); during a drag it is the grabbing hand.
+    result: passed
+    reason:
+      text: "Editing: hovering map_rect sets CursorIcon::PointingHand; during a drag
+        CursorIcon::Grabbing; play mode returns before either."
+      truncated: false
+  - id: A136
+    source: specs/minimap-navigation/spec.md
+    text: Arrow-key scrolling keeps working before and after the gesture; a key held
+      during a drag does not fight the drag, because the drag re-applies its
+      target after the scroll model steps.
+    result: passed
+    reason:
+      text: handle_minimap_pointer is called at update line ~1499, after
+        self.scroll.step(...) at ~1381, so the drag target overrides any
+        arrow-key motion that frame; arrow-key code is unchanged.
+      truncated: false
+  - id: A137
+    source: specs/minimap-navigation/spec.md
+    text: The Mouse section of the help window lists the gesture as `Click / drag
+      the minimap` → `Jump the view to that part of the level; keep the button
+      down and drag to scroll it live.` (see `editor-help-screen`).
+    result: passed
+    reason:
+      text: help.rs mouse row text matches the spec string exactly.
+      truncated: false
+  - id: A138
+    source: specs/minimap-navigation/spec.md
+    text: "A1 — Editing, level 25600×720, view at the origin: a press at the
+      horizontal middle of the minimap centres the view on world x ≈ 12800
+      (`scroll_offset.x ≈ 12800 − panel_width/2`) on the next frame; the yellow
+      rectangle surrounds the pressed spot."
+    result: passed
+    reason:
+      text: minimap::offset_for_pointer maps inner.center() to world 12800 and
+        centre_offset subtracts panel/2 then clamps y to 0; test
+        a_press_on_the_minimap_jumps_the_view_and_kills_momentum and
+        a_press_in_the_middle_centres_the_view_on_the_level_middle assert
+        x≈12800−640 and y==0, and the renderer's view_rect is derived from the
+        same refreshed scroll_offset so it is centred on the pressed spot.
+      truncated: false
+  - id: A139
+    source: specs/minimap-navigation/spec.md
+    text: A2 — A press whose target centre is within half a viewport of the origin
+      yields `scroll_offset` exactly 0 on that axis; a press on the far edge
+      puts that level edge at the centre of the view (`scroll_offset =
+      level_size − panel_size/2` on that axis); the offset is never outside `0
+      ..= level_size`.
+    result: passed
+    reason:
+      text: centre_offset clamps each axis to 0..=level (never negative, never past
+        level_size); tests the_offset_never_goes_negative_near_the_origin,
+        the_offset_never_passes_the_level_size_near_the_far_edge (off == level −
+        panel/2 at the far edge, == level when far beyond) and
+        dragging_across_the_thumbnail_sweeps_the_whole_level (right edge ⇒ 25600
+        − 640) cover both axes.
+      truncated: false
+  - id: A140
+    source: specs/minimap-navigation/spec.md
+    text: A3 — Press-and-drag across the minimap moves the view every frame while
+      the button is held, also once the pointer has left the minimap; release
+      ends it; a drag started on the canvas that passes over the minimap does
+      not move the view.
+    result: passed
+    reason:
+      text: minimap_drag is set only on primary_pressed() over map_rect and re-applies
+        layout.offset_for_pointer each frame while primary_down() (world_at
+        clamps off-box positions to inner); a canvas press never sets it — tests
+        the_gesture_is_consumed_through_the_release_frame_wherever_it_lands and
+        a_drag_that_started_on_the_canvas_does_not_move_the_view_over_the_minimap
+        pass.
+      truncated: false
+  - id: A141
+    source: specs/minimap-navigation/spec.md
+    text: "A4 — Scroll velocity is zero at the press and after release: no glide,
+      and pending arrow-key momentum is discarded."
+    result: passed
+    reason:
+      text: handle_minimap_pointer sets scroll.velocity = Vec2::ZERO on every drag
+        frame including the press frame, and runs after self.scroll.step(...) in
+        update; test asserts velocity is zero after a press that started with
+        velocity (900,0).
+      truncated: false
+  - id: A142
+    source: specs/minimap-navigation/spec.md
+    text: A5 — With Bitmap, Polygon, Select or Delete active, a minimap click
+      changes no entities, vertices or selection; canvas clicks outside the
+      minimap behave as before.
+    result: passed
+    reason:
+      text: pointer_over_ui returns true for minimap_drag or layout.contains(pos); the
+        central-panel click dispatch (spawn move, DrawPolygon, Bitmap, Select,
+        Erase) and the secondary-click path are all guarded by !help_click /
+        !secondary_over_help, so a minimap press reaches no tool; canvas clicks
+        outside map_rect hit the unchanged code.
+      truncated: false
+  - id: A143
+    source: specs/minimap-navigation/spec.md
+    text: A6 — While playing, minimap presses and drags change neither the view nor
+      the spawn point.
+    result: passed
+    reason:
+      text: In play mode handle_minimap_pointer performs only the gesture bookkeeping
+        then returns before touching scroll.offset, while pointer_over_ui still
+        consumes the click so the play-spawn branch (`self.play.is_some() &&
+        !toolbox_click && !help_click`) is skipped; test
+        the_minimap_ignores_the_mouse_while_playing_but_still_owns_the_spot
+        covers press and an off-box release.
+      truncated: false
+  - id: A144
+    source: specs/minimap-navigation/spec.md
+    text: A7 — Hovering the minimap while editing shows the pointing-hand cursor; a
+      press leaves level data and `has_unsaved_changes()` unchanged.
+    result: passed
+    reason:
+      text: Hovering map_rect while editing sets ctx.output_mut cursor_icon =
+        PointingHand (Grabbing during a drag), the handler writes only scroll
+        state, and test
+        a_minimap_press_drops_a_pending_entity_drag_and_leaves_the_level_alone
+        asserts entities hash and has_unsaved_changes() are unchanged.
+      truncated: false
+  - id: A145
+    source: specs/minimap-navigation/spec.md
+    text: A8 — The help's Mouse section has the minimap row and the help module's
+      completeness test asserts it.
+    result: passed
+    reason:
+      text: help.rs adds HelpEntry 'Click / drag the minimap' to the mouse list and
+        mouse_section_covers_every_gesture asserts that needle.
+      truncated: false
+  - id: A146
+    source: specs/minimap-navigation/spec.md
+    text: A9 — `cargo test` passes with unit tests for the pure layout + mapping
+      (centre, clamps at both ends, both axes) and for the help row.
+    result: passed
+    reason:
+      text: "cargo test re-run here: 168 unit tests + 1 integration test pass,
+        including minimap layout/mapping tests (centre, clamps at both ends,
+        both axes) and the help row test."
+      truncated: false
+builder_handoff:
+  candidate_id: 34b32d77-42b0-4d74-9e7a-8f4a4e02b605
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:d62f424e-c252-4cae-a5ac-ce7334b55608
+  iteration: 3
+  summary:
+    text: "Iteration 3 addresses the two iteration-2 findings. (1) The sliver-layout
+      test now clips the box from its left edge (screen right = map_rect.left()
+      + 6) so the premise holds; the layout guard itself is unchanged. (2) Play
+      mode: handle_minimap_pointer now runs the gesture bookkeeping
+      (minimap_drag set on a press over the box, kept through the release frame,
+      cleared the frame after, armed entity/vertex drags dropped) BEFORE the
+      play-mode early return, so pointer_over_ui consumes the click even when
+      the release lands up to 6 px off the box; only the view jump, drag and
+      hover cursor are skipped while playing. The play-mode test now covers the
+      off-box release. Full suite passes."
+    truncated: false
+  addressed_acceptance_ids:
+    - A9
+    - A146
+    - A6
+    - A134
+    - A143
+    - A5
+    - A132
+    - A142
+    - A7
+    - A133
+    - A144
+  checks:
+    - name:
+        text: cargo test
+        truncated: false
+      result: passed
+      note:
+        text: 168 unit tests + 1 integration test pass (verified before submitting this
+          handoff)
+        truncated: false
+    - name:
+        text: cargo build
+        truncated: false
+      result: passed
+      note:
+        text: no warnings in the touched code
+        truncated: false
+    - name:
+        text: manual run on level_image.png
+        truncated: false
+      result: not-run
+      note:
+        text: GUI interaction not available in this session
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: When the help window or a dialog overlaps the minimap corner, a press
+        there is seen by both the window and the minimap (both consume it from
+        the canvas).
+      truncated: false
+    - text: Renderer panel rect is ctx.available_rect(), the same rect the hit-test
+        uses.
+      truncated: false
+  known_limits_truncated: false
+  submitted_at: 2026-09-14T05:41:05.398Z
+blockers: []
+verification:
+  candidate_id: 34b32d77-42b0-4d74-9e7a-8f4a4e02b605
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:8798bfae-0a22-4dcc-9b6a-209857449964
+  iteration: 3
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: pass
+  checks:
+    - id: cargo-test
+      name:
+        text: cargo test
+        truncated: false
+      argv_display:
+        - text: test
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 202
+    - id: cargo-build
+      name:
+        text: cargo build
+        truncated: false
+      argv_display:
+        - text: build
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 179
+  summary:
+    text: Iteration 3 satisfies all 146 acceptance items by code reading and tests.
+      The pure minimap module supplies one layout shared by renderer and
+      hit-test, centre_offset clamps to 0..=level_size, the handler runs after
+      the scroll step, zeroes velocity, drops armed entity/vertex drags, keeps
+      the gesture consumed through the release frame (in both editing and play
+      mode) and sets PointingHand/Grabbing cursors while editing. cargo test
+      (168 + 1) and cargo build pass locally; the help Mouse row and README
+      mention are present. Remaining risks are a theoretical stale-flag corner
+      case and the panel-rect source change, neither of which breaks an
+      acceptance item.
+    truncated: false
+  risks:
+    - text: "Stale-gesture corner case: minimap_drag is cleared only on a frame where
+        the button is neither down nor released. If a release lands ≤6 px off
+        the box and a new press arrives on the very next frame with no
+        intervening pointer-move frame, the flag survives and that canvas press
+        continues the minimap drag. Practically negligible (a mouse move almost
+        always intervenes) but clearing minimap_drag on `primary_pressed() &&
+        !hovering` would remove it."
+      truncated: false
+    - text: The renderer's panel rect changed from the CentralPanel's ui.clip_rect()
+        (which in egui 0.27 is the screen rect) to ctx.available_rect() (screen
+        minus menu bar). Position is bottom-right anchored so it is unchanged;
+        size only differs for levels tall enough for the box to be panel-height
+        bound, and the yellow viewport rectangle is now sized by the true canvas
+        height. This matches the spec's 'central panel rect' and is arguably a
+        correction, but is a visible tweak in that corner case.
+      truncated: false
+    - text: "Known limit (builder): a window or the toolbox overlapping the minimap
+        corner and the minimap both take a press there; the debug-order minimap
+        is drawn above windows so it matches what is visible, but the toolbox
+        drag-start check uses pointer_over_panels, not pointer_over_ui."
+      truncated: false
+    - text: GUI behaviours (cursor icons, visual centring) were judged from code
+        paths; no interactive run was possible.
+      truncated: false
+  risks_truncated: false
+  completed_at: 2026-09-14T05:47:18.035Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 0
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: Native confirmed acceptance criteria changed
+      truncated: false
+    completed_at: 2026-09-14T05:04:51.865Z
+  - goal_cycle: 2
+    iteration: 1
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A5
+      - A7
+      - A132
+      - A133
+      - A142
+      - A144
+    summary:
+      text: "The pure minimap module, shared layout, centring/clamping maths,
+        play-mode gating, cursor feedback, ordering after the scroll step, help
+        row and tests are all correct and cargo test/build pass (162 unit
+        tests). Two consumption gaps remain: canvas tool dispatch is gated on
+        the release position of primary_clicked(), so a press on the minimap
+        released 1-6 px outside the box still reaches the tools; and the sticky
+        entity/vertex drag blocks have no minimap gate, so after a select click
+        a press-and-drag on the minimap moves that entity or vertex and marks
+        the level changed. Verdict: fail on A5, A7, A132, A133, A142, A144."
+      truncated: false
+    completed_at: 2026-09-14T05:31:09.990Z
+  - goal_cycle: 2
+    iteration: 2
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A6
+      - A9
+      - A134
+      - A143
+      - A146
+    summary:
+      text: "The minimap gesture is implemented as specified: a shared pure layout
+        drives both renderer and hit-test, presses re-centre and clamp to
+        0..=level_size, velocity is zeroed, the handler runs after the scroll
+        step, and while editing the gesture is consumed through the release
+        frame with pending entity/vertex drags dropped. Two defects block a
+        pass: cargo test fails on the new
+        minimap::tests::a_box_clipped_thinner_than_its_frame_is_dropped (a wrong
+        test premise, not a layout bug), and in play mode a minimap press
+        released up to 6 px outside the box is not consumed and moves the spawn
+        point, contradicting A6/A134/A143. The help row, its completeness test
+        and the README mention are in place."
+      truncated: false
+    completed_at: 2026-09-14T05:41:01.124Z
+  - goal_cycle: 2
+    iteration: 3
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: Iteration 3 satisfies all 146 acceptance items by code reading and tests.
+        The pure minimap module supplies one layout shared by renderer and
+        hit-test, centre_offset clamps to 0..=level_size, the handler runs after
+        the scroll step, zeroes velocity, drops armed entity/vertex drags, keeps
+        the gesture consumed through the release frame (in both editing and play
+        mode) and sets PointingHand/Grabbing cursors while editing. cargo test
+        (168 + 1) and cargo build pass locally; the help Mouse row and README
+        mention are present. Remaining risks are a theoretical stale-flag corner
+        case and the panel-rect source change, neither of which breaks an
+        acceptance item.
+      truncated: false
+    completed_at: 2026-09-14T05:47:18.035Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: true
+created_at: 2026-09-14T04:52:13.063Z

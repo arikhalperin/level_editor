@@ -155,6 +155,10 @@ impl HelpContent {
             ),
             HelpEntry::new("Click outside the polygon (edit mode)", "Leave vertex-edit mode."),
             HelpEntry::new("Drag the toolbox", "Move the toolbox anywhere on screen."),
+            HelpEntry::new(
+                "Click / drag the minimap",
+                "Jump the view to that part of the level; keep the button down and drag to scroll it live.",
+            ),
         ];
 
         let tools = match tools {
@@ -312,6 +316,7 @@ mod tests {
             "Drag (edit mode)",
             "Click outside the polygon (edit mode)",
             "Drag the toolbox",
+            "Click / drag the minimap",
         ] {
             assert!(text.contains(needle), "mouse section missing: {needle}");
         }
