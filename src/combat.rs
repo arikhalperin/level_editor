@@ -837,7 +837,7 @@ mod tests {
 
     /// Wide floor with its surface at y = 500.
     fn floor() -> World {
-        World { polys: vec![rect_poly(-5000.0, 500.0, 5000.0, 900.0)] }
+        World { polys: vec![rect_poly(-5000.0, 500.0, 5000.0, 900.0)], ropes: vec![] }
     }
 
     fn bitmap(name: &str, x: f32, y: f32, w: f32, h: f32) -> BitmapSpawn {
@@ -1309,6 +1309,7 @@ mod tests {
                 rect_poly(-500.0, 500.0, 200.0, 900.0),
                 rect_poly(300.0, 500.0, 900.0, 900.0),
             ],
+            ropes: vec![],
         };
         let mut s = PlaySession::new(Pos2::new(350.0, 400.0), &[]);
         run(&mut s, &w, PlayInput::default(), 1.0);
@@ -1345,6 +1346,7 @@ mod tests {
                 rect_poly(-500.0, 500.0, 900.0, 900.0),
                 rect_poly(200.0, 100.0, 260.0, 500.0),
             ],
+            ropes: vec![],
         };
         let mut s = PlaySession::new(Pos2::new(350.0, 400.0), &[]);
         run(&mut s, &w, PlayInput::default(), 1.0);

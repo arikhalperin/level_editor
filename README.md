@@ -10,13 +10,15 @@ built-in play mode so a level can be tested without leaving the editor.
   - Click to add points; Enter, double-click or right-click to finish; Escape to cancel.
   - Double-click a polygon to edit it; drag its points; Delete/Backspace to remove one.
 - **Entity placement**: place sprites (coins, orcs, death traps) anywhere in the level.
+- **Ropes**: hang a rope with two clicks (anchor, then bottom end); in play mode the
+  character grabs it, swings, climbs along it and lets go with momentum.
 - **Two-axis smooth scrolling**: hold the arrow keys to scroll in any direction; the canvas
   accelerates and glides to a stop.
 - **Explicit level size**: set the level's width and height, drawn as a boundary and saved
   with the level. Scrolling is deliberately unbounded, so the level can be grown later.
 - **Background image**: load a PNG behind the level for reference; large images are tiled.
 - **Play mode**: drop a controllable character into the level and test it — full movement
-  (run, jump, dash, wall slide, wall jump, climb) plus combat (katana, orcs, coins, death
+  (run, jump, dash, wall slide, wall jump, climb, rope swing) plus combat (katana, orcs, coins, death
   pits, shield). Play never modifies the level.
 - **Minimap**: a thumbnail with the current viewport marked. Click or drag on it to jump the view to that part of the level.
 - **Undo/redo**: Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z.
@@ -53,6 +55,7 @@ Press **F1** in the editor for the same reference, generated from the running bu
 | Left click, Delete tool | Remove the entity under the cursor. |
 | Left click, polygon tool | Add a vertex. |
 | Left click, sprite tool | Place the sprite at the cursor. |
+| Left click, Rope tool | First click sets the anchor, second click sets the bottom end; Escape cancels. |
 | Double-click, polygon tool | Close and finish the polygon. |
 | Double-click, Select tool | Enter vertex-edit mode for that polygon. |
 | Right click, polygon tool | Finish the polygon being drawn. |

@@ -102,11 +102,43 @@ fn convex_hull(points: &[Pos2]) -> Vec<Pos2> {
     lower
 }
 
-/// Everything solid in the level.
+/// A rope hung from a level `rope_tool` entry: a pendulum the character can grab.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Rope {
+    /// Anchor in world space (the rope hangs toward +Y).
+    pub anchor: Pos2,
+    pub length: f32,
+}
+
+/// Everything solid in the level, plus its ropes.
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct World {
     pub polys: Vec<CollisionPoly>,
+    pub ropes: Vec<Rope>,
 }
+
+/// A rope's swing: angle from vertical (0 = hanging straight down, positive toward +x)
+/// and angular velocity. Lives in the simulation because play never edits the level.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct RopeSwing {
+    pub angle: f32,
+    pub ang_vel: f32,
+}
+
+impl RopeSwing {
+    /// Unit vector along the rope from its anchor.
+    pub fn dir(&self) -> Vec2 {
+        Vec2::new(self.angle.sin(), self.angle.cos())
+    }
+    /// Unit tangent in the direction of increasing angle.
+    pub fn tangent(&self) -> Vec2 {
+        Vec2::new(self.angle.cos(), -self.angle.sin())
+    }
+}
+
+/// Below these the free rope snaps to hanging still.
+const ROPE_REST_ANGLE: f32 = 0.5_f32 * std::f32::consts::PI / 180.0;
+const ROPE_REST_ANG_VEL: f32 = 0.02;
 
 /// What the character is doing, for the status overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -116,6 +148,7 @@ pub enum State {
     Dashing,
     WallSliding,
     Climbing,
+    Rope,
 }
 
 impl State {
@@ -126,6 +159,7 @@ impl State {
             State::Dashing => "dash",
             State::WallSliding => "wall slide",
             State::Climbing => "climb",
+            State::Rope => "rope",
         }
     }
 }
@@ -176,6 +210,14 @@ pub struct Simulation {
     /// release-shorten gravity must never apply to it — otherwise it is cancelled on
     /// the very next step. The faster post-apex fall still applies, as in the game.
     bounce: bool,
+
+    // Rope
+    /// One swing per `World::ropes` entry, in the same order; resized on each step.
+    rope_swings: Vec<RopeSwing>,
+    /// The rope being held, as `(index, hold length from the anchor)`.
+    rope_hold: Option<(usize, f32)>,
+    /// No grab while positive: the lock after letting go.
+    regrab_lock_left: f32,
 }
 
 impl Simulation {
@@ -207,6 +249,9 @@ impl Simulation {
             wall_jump_carry: false,
             control_lock_left: 0.0,
             bounce: false,
+            rope_swings: Vec::new(),
+            rope_hold: None,
+            regrab_lock_left: 0.0,
         }
     }
 
@@ -233,6 +278,8 @@ impl Simulation {
     /// knockback already applied.
     pub fn lock_control(&mut self, secs: f32) {
         self.control_lock_left = self.control_lock_left.max(secs);
+        // Being hurt drops the rope.
+        self.drop_rope();
     }
 
     pub fn is_control_locked(&self) -> bool {
@@ -247,6 +294,7 @@ impl Simulation {
     /// Set the velocity outright and hold it against horizontal input for `hold` seconds:
     /// sword recoil and club knockback.
     pub fn apply_knockback(&mut self, vel: Vec2, hold: f32) {
+        self.drop_rope();
         self.vel = vel;
         self.input_lock_left = self.input_lock_left.max(hold);
         self.wall_jump_carry = true;
@@ -275,6 +323,162 @@ impl Simulation {
 
     pub fn is_climbing(&self) -> bool {
         self.state == State::Climbing
+    }
+
+    /// Part of the simulation's public contract (used by tests and the game port).
+    #[allow(dead_code)]
+    pub fn is_on_rope(&self) -> bool {
+        self.rope_hold.is_some()
+    }
+
+    /// The rope being held and the hold length, if any.
+    #[allow(dead_code)]
+    pub fn rope_hold(&self) -> Option<(usize, f32)> {
+        self.rope_hold
+    }
+
+    /// The current swing of rope `i` (hanging still if unknown).
+    pub fn rope_swing(&self, i: usize) -> RopeSwing {
+        self.rope_swings.get(i).copied().unwrap_or_default()
+    }
+
+    /// Let go without a hop: the character keeps its velocity, the rope keeps swinging.
+    fn drop_rope(&mut self) {
+        if self.rope_hold.take().is_some() {
+            self.state = State::Airborne;
+        }
+    }
+
+    /// Keep one swing per rope in the world. Ropes are level data and never change
+    /// during play, so an existing swing is kept; a fresh world starts every rope still.
+    fn sync_ropes(&mut self, world: &World) {
+        if self.rope_swings.len() != world.ropes.len() {
+            self.rope_swings = vec![RopeSwing::default(); world.ropes.len()];
+            self.rope_hold = None;
+        }
+    }
+
+    /// Advance every rope nobody is holding as a damped free pendulum.
+    fn step_free_ropes(&mut self, world: &World, dt: f32) {
+        let held = self.rope_hold.map(|(i, _)| i);
+        for (i, (rope, swing)) in world.ropes.iter().zip(self.rope_swings.iter_mut()).enumerate() {
+            if held == Some(i) {
+                continue;
+            }
+            let len = rope.length.max(cfg::ROPE_MIN_HOLD);
+            swing.ang_vel += (-(cfg::GRAVITY / len) * swing.angle.sin() - cfg::ROPE_DAMPING * swing.ang_vel) * dt;
+            swing.angle += swing.ang_vel * dt;
+            if swing.angle.abs() < ROPE_REST_ANGLE && swing.ang_vel.abs() < ROPE_REST_ANG_VEL {
+                *swing = RopeSwing::default();
+            }
+        }
+    }
+
+    /// Grab the nearest rope within reach when up or down is held.
+    fn try_grab_rope(&mut self, world: &World, input: Input) {
+        if self.regrab_lock_left > 0.0 || input.axis_y() == 0.0 || self.is_dashing() {
+            return;
+        }
+        let mut best: Option<(usize, f32, f32)> = None; // (index, hold length, distance)
+        for (i, rope) in world.ropes.iter().enumerate() {
+            let swing = self.rope_swings[i];
+            let d = swing.dir();
+            let start = rope.anchor + d * cfg::ROPE_MIN_HOLD.min(rope.length);
+            let end = rope.anchor + d * rope.length;
+            let nearest = closest_on_segment(start, end, self.pos);
+            let dist = (self.pos - nearest).length();
+            if dist <= cfg::ROPE_GRAB_HALF_WIDTH && best.is_none_or(|(_, _, bd)| dist < bd) {
+                let along = (self.pos - rope.anchor).dot(d);
+                let hold = along.clamp(cfg::ROPE_MIN_HOLD.min(rope.length), rope.length);
+                best = Some((i, hold, dist));
+            }
+        }
+        let Some((i, hold, _)) = best else { return };
+        let swing = &mut self.rope_swings[i];
+        // Momentum carries into the swing.
+        swing.ang_vel = self.vel.dot(swing.tangent()) / hold;
+        let d = swing.dir();
+        let t = swing.tangent();
+        self.pos = world.ropes[i].anchor + d * hold;
+        self.vel = t * (hold * swing.ang_vel);
+        self.rope_hold = Some((i, hold));
+        self.state = State::Rope;
+        self.grounded = false;
+        self.in_jump = false;
+        self.bounce = false;
+        self.wall_dir = 0.0;
+        self.wall_jump_carry = false;
+        self.coyote_left = 0.0;
+        self.jump_buffer_left = 0.0;
+    }
+
+    /// One step on the rope: release on jump, else swing, pump, climb and collide.
+    fn step_rope(&mut self, world: &World, input: Input, dt: f32) {
+        let Some((i, mut hold)) = self.rope_hold else { return };
+        let rope = world.ropes[i];
+
+        if self.jump_buffer_left > 0.0 {
+            // Let go with the swing's velocity plus a hop; the rope swings on.
+            let swing = self.rope_swings[i];
+            self.vel = swing.tangent() * (hold * swing.ang_vel)
+                + Vec2::new(0.0, -Self::jump_speed(cfg::ROPE_RELEASE_HOP_HEIGHT));
+            self.rope_hold = None;
+            self.state = State::Airborne;
+            self.in_jump = true;
+            self.bounce = true;
+            self.jump_held_since_takeoff = true;
+            self.air_dashes_used = 0;
+            self.jump_buffer_left = 0.0;
+            self.regrab_lock_left = cfg::ROPE_REGRAB_LOCK;
+            return;
+        }
+
+        let max_angle = cfg::ROPE_MAX_ANGLE_DEG.to_radians();
+        let swing = &mut self.rope_swings[i];
+        let pump = input.axis_x() * cfg::ROPE_PUMP_ACCEL;
+        swing.ang_vel += (-(cfg::GRAVITY / hold) * swing.angle.sin() + pump / hold
+            - cfg::ROPE_DAMPING * swing.ang_vel)
+            * dt;
+        swing.angle += swing.ang_vel * dt;
+        if swing.angle > max_angle {
+            swing.angle = max_angle;
+            swing.ang_vel = swing.ang_vel.min(0.0);
+        } else if swing.angle < -max_angle {
+            swing.angle = -max_angle;
+            swing.ang_vel = swing.ang_vel.max(0.0);
+        }
+        // Down lengthens the hold, up shortens it.
+        hold = (hold + input.axis_y() * cfg::CLIMB_SPEED * dt)
+            .clamp(cfg::ROPE_MIN_HOLD.min(rope.length), rope.length);
+
+        let swing = self.rope_swings[i];
+        self.pos = rope.anchor + swing.dir() * hold;
+        self.vel = swing.tangent() * (hold * swing.ang_vel);
+        if swing.ang_vel.abs() > 1e-3 {
+            self.facing = swing.ang_vel.signum();
+        }
+
+        // Solid geometry stops the swing: push out, re-aim the rope at the pushed
+        // position, and kill the angular velocity.
+        let mut pushed = false;
+        for _ in 0..4 {
+            let Some((mtv, _)) = self.deepest_overlap(world) else { break };
+            self.pos += mtv;
+            pushed = true;
+        }
+        if pushed {
+            let rel = self.pos - rope.anchor;
+            let swing = &mut self.rope_swings[i];
+            swing.angle = rel.x.atan2(rel.y).clamp(-max_angle, max_angle);
+            swing.ang_vel = 0.0;
+            self.vel = Vec2::ZERO;
+        }
+
+        self.rope_hold = Some((i, hold));
+        self.state = State::Rope;
+        self.grounded = false;
+        self.wall_dir = 0.0;
+        self.wall_climbable = false;
     }
 
     /// Axis-aligned bounds of the capsule, for overlap tests against boxes.
@@ -318,6 +522,14 @@ impl Simulation {
         let input = if self.control_lock_left > 0.0 { Input::default() } else { input };
 
         self.tick_timers(dt, input);
+        self.regrab_lock_left = (self.regrab_lock_left - dt).max(0.0);
+        self.sync_ropes(world);
+        self.step_free_ropes(world, dt);
+
+        if self.rope_hold.is_some() {
+            self.step_rope(world, input, dt);
+            return;
+        }
 
         if self.dash_left > 0.0 {
             self.step_dash(world, dt);
@@ -352,6 +564,8 @@ impl Simulation {
         } else {
             State::Airborne
         };
+
+        self.try_grab_rope(world, input);
     }
 
     fn tick_timers(&mut self, dt: f32, input: Input) {
@@ -699,7 +913,7 @@ mod tests {
 
     /// A wide floor with its surface at y = 500.
     fn floor_world() -> World {
-        World { polys: vec![rect(-5000.0, 500.0, 5000.0, 900.0, false)] }
+        World { polys: vec![rect(-5000.0, 500.0, 5000.0, 900.0, false)], ropes: vec![] }
     }
 
     fn none() -> Input {
@@ -719,6 +933,195 @@ mod tests {
         run_for(&mut s, &w, none(), 1.0);
         assert!(s.grounded, "should have landed, pos {:?}", s.pos);
         (s, w)
+    }
+
+    // ── Ropes ────────────────────────────────────────────────────────────────
+
+    const ROPE_ANCHOR: Pos2 = Pos2::new(500.0, 100.0);
+    const ROPE_LEN: f32 = 300.0;
+
+    fn rope_world() -> World {
+        World { polys: vec![], ropes: vec![Rope { anchor: ROPE_ANCHOR, length: ROPE_LEN }] }
+    }
+
+    const UP: Input = Input { up: true, ..NONE_INPUT };
+    const NONE_INPUT: Input = Input { left: false, right: false, up: false, down: false, jump: false, dash: false };
+
+    /// A character hanging still on the rope at `hold` px below the anchor.
+    fn hanging(hold: f32) -> (Simulation, World) {
+        let world = rope_world();
+        let mut sim = Simulation::new(Pos2::new(ROPE_ANCHOR.x, ROPE_ANCHOR.y + hold));
+        sim.vel = Vec2::ZERO;
+        sim.step(&world, UP, DT);
+        assert!(sim.is_on_rope(), "should have grabbed the rope");
+        (sim, world)
+    }
+
+    #[test]
+    fn holding_up_beside_a_rope_grabs_it_at_that_height() {
+        let world = rope_world();
+        let mut sim = Simulation::new(Pos2::new(ROPE_ANCHOR.x + 20.0, ROPE_ANCHOR.y + 200.0));
+        sim.step(&world, none(), DT);
+        assert!(!sim.is_on_rope(), "no grab without up or down held");
+        sim.step(&world, UP, DT);
+        assert!(sim.is_on_rope());
+        assert_eq!(sim.state, State::Rope);
+        assert_eq!(sim.state.label(), "rope");
+        let (_, hold) = sim.rope_hold().unwrap();
+        assert!((hold - 200.0).abs() < 5.0, "hold at the grab height, got {hold}");
+        assert!((sim.pos.x - ROPE_ANCHOR.x).abs() < 1e-3, "snapped onto the rope line");
+    }
+
+    #[test]
+    fn a_rope_out_of_reach_or_above_the_min_hold_is_not_grabbed() {
+        let world = rope_world();
+        let mut sim = Simulation::new(Pos2::new(ROPE_ANCHOR.x + 60.0, ROPE_ANCHOR.y + 200.0));
+        sim.step(&world, UP, DT);
+        assert!(!sim.is_on_rope(), "60 px away is beyond the 30 px reach");
+        let mut sim = Simulation::new(Pos2::new(ROPE_ANCHOR.x, ROPE_ANCHOR.y + 5.0));
+        sim.step(&world, UP, DT);
+        assert!(!sim.is_on_rope(), "right at the anchor is above the lowest hold");
+    }
+
+    #[test]
+    fn a_rope_swings_with_the_pendulum_period_and_settles() {
+        let (mut sim, world) = hanging(200.0);
+        let hold = 200.0;
+        // Start at 30 degrees with no motion.
+        sim.rope_swings[0] = RopeSwing { angle: 30_f32.to_radians(), ang_vel: 0.0 };
+        // Time until the angle first comes back through 30°-ish from the other side:
+        // measure the period as twice the time between successive zero crossings.
+        let mut crossings = vec![];
+        let mut prev = sim.rope_swing(0).angle;
+        let mut t = 0.0;
+        while crossings.len() < 3 && t < 10.0 {
+            sim.step(&world, none(), DT);
+            t += DT;
+            let a = sim.rope_swing(0).angle;
+            if (prev > 0.0) != (a > 0.0) {
+                crossings.push(t);
+            }
+            prev = a;
+        }
+        assert_eq!(crossings.len(), 3, "should swing through the bottom repeatedly");
+        let period = crossings[2] - crossings[0];
+        let expected = 2.0 * std::f32::consts::PI * (hold / cfg::GRAVITY).sqrt();
+        assert!((period - expected).abs() < expected * 0.10, "period {period} vs {expected}");
+        assert!(sim.is_on_rope(), "still holding on");
+
+        run_for(&mut sim, &world, none(), 30.0);
+        assert!(sim.rope_swing(0).angle.abs() < 0.01, "damped to hanging straight, got {}", sim.rope_swing(0).angle);
+    }
+
+    #[test]
+    fn pumping_builds_a_swing_capped_at_the_max_angle() {
+        let (mut sim, world) = hanging(200.0);
+        let right = Input { right: true, ..NONE_INPUT };
+        let mut max_seen = 0.0_f32;
+        let max_angle = cfg::ROPE_MAX_ANGLE_DEG.to_radians();
+        for _ in 0..(20.0 / DT) as usize {
+            sim.step(&world, right, DT);
+            let a = sim.rope_swing(0).angle;
+            assert!(a <= max_angle + 1e-4, "angle {a} passed the cap");
+            max_seen = max_seen.max(a);
+        }
+        assert!(max_seen > 20_f32.to_radians(), "pumping should build a real swing, got {max_seen}");
+        assert!((max_seen - max_angle).abs() < 0.05, "and reach the cap, got {max_seen}");
+    }
+
+    #[test]
+    fn up_and_down_move_the_hold_along_the_rope_within_bounds() {
+        let (mut sim, world) = hanging(200.0);
+        run_for(&mut sim, &world, UP, 0.5);
+        let (_, hold) = sim.rope_hold().unwrap();
+        assert!((hold - (200.0 - cfg::CLIMB_SPEED * 0.5)).abs() < 2.0, "climbed up, got {hold}");
+        run_for(&mut sim, &world, UP, 5.0);
+        assert!((sim.rope_hold().unwrap().1 - cfg::ROPE_MIN_HOLD).abs() < 1e-3, "no closer than the min hold");
+        let down = Input { down: true, ..NONE_INPUT };
+        run_for(&mut sim, &world, down, 5.0);
+        assert!((sim.rope_hold().unwrap().1 - ROPE_LEN).abs() < 1e-3, "no further than the rope's end");
+        assert!((sim.pos.y - (ROPE_ANCHOR.y + ROPE_LEN)).abs() < 1e-2, "hanging at the very end");
+    }
+
+    #[test]
+    fn jump_releases_with_the_swing_velocity_plus_a_hop_and_locks_regrab() {
+        let (mut sim, world) = hanging(200.0);
+        sim.rope_swings[0] = RopeSwing { angle: 0.0, ang_vel: 2.0 };
+        sim.step(&world, none(), DT);
+        let expect_vx = 200.0 * sim.rope_swing(0).ang_vel;
+        let jump = Input { jump: true, ..NONE_INPUT };
+        sim.step(&world, jump, DT);
+        assert!(!sim.is_on_rope(), "let go");
+        assert_eq!(sim.state, State::Airborne);
+        assert!((sim.vel.x - expect_vx).abs() < 5.0, "keeps the tangential speed, got {} vs {expect_vx}", sim.vel.x);
+        let hop = (2.0 * cfg::GRAVITY * cfg::ROPE_RELEASE_HOP_HEIGHT).sqrt();
+        assert!(sim.vel.y < -hop + 20.0, "plus the hop, got {}", sim.vel.y);
+        assert!(sim.rope_swing(0).ang_vel.abs() > 1.0, "the rope swings on");
+
+        // Held up right at the rope: no grab during the lock, grab after it.
+        sim.pos = Pos2::new(ROPE_ANCHOR.x, ROPE_ANCHOR.y + 200.0);
+        sim.vel = Vec2::ZERO;
+        sim.step(&world, UP, DT);
+        assert!(!sim.is_on_rope(), "regrab is locked");
+        for _ in 0..(cfg::ROPE_REGRAB_LOCK / DT) as usize + 2 {
+            sim.pos = Pos2::new(ROPE_ANCHOR.x, ROPE_ANCHOR.y + 200.0);
+            sim.vel = Vec2::ZERO;
+            sim.step(&world, none(), DT);
+        }
+        // The rope swung on meanwhile; still it so the character is on its line again.
+        sim.rope_swings[0] = RopeSwing::default();
+        sim.pos = Pos2::new(ROPE_ANCHOR.x, ROPE_ANCHOR.y + 200.0);
+        sim.vel = Vec2::ZERO;
+        sim.step(&world, UP, DT);
+        assert!(sim.is_on_rope(), "grabbed again once the lock expired");
+    }
+
+    #[test]
+    fn running_into_a_rope_carries_momentum_into_the_swing() {
+        let world = rope_world();
+        let mut sim = Simulation::new(Pos2::new(ROPE_ANCHOR.x - 20.0, ROPE_ANCHOR.y + 200.0));
+        sim.vel = Vec2::new(cfg::PLAYER_RUN_SPEED, 0.0);
+        sim.step(&world, UP, DT);
+        assert!(sim.is_on_rope());
+        let (_, hold) = sim.rope_hold().unwrap();
+        let expect = cfg::PLAYER_RUN_SPEED / hold;
+        let w = sim.rope_swing(0).ang_vel;
+        assert!((w - expect).abs() < expect * 0.1, "ang_vel {w} vs v/L {expect}");
+    }
+
+    #[test]
+    fn a_wall_in_the_swing_path_stops_the_swing() {
+        let mut world = rope_world();
+        // A wall just to the right of the hanging position.
+        world.polys.push(rect(ROPE_ANCHOR.x + 60.0, 0.0, ROPE_ANCHOR.x + 400.0, 1000.0, false));
+        let (mut sim, _) = hanging(200.0);
+        sim.rope_swings[0] = RopeSwing { angle: 0.0, ang_vel: 3.0 };
+        run_for(&mut sim, &world, none(), 1.0);
+        assert!(sim.is_on_rope(), "still on the rope");
+        assert!(sim.pos.x <= ROPE_ANCHOR.x + 60.0 - cfg::PLAYER_CAPSULE_RADIUS + 1.0, "pushed out of the wall");
+        assert!(sim.rope_swing(0).ang_vel.abs() < 0.5, "the swing stopped");
+    }
+
+    #[test]
+    fn being_hurt_drops_the_rope_and_dash_cannot_start_on_it() {
+        let (mut sim, world) = hanging(200.0);
+        let dash = Input { dash: true, right: true, ..NONE_INPUT };
+        run_for(&mut sim, &world, dash, 0.3);
+        assert!(sim.is_on_rope() && !sim.is_dashing(), "no dash from the rope");
+        sim.apply_knockback(Vec2::new(300.0, -170.0), 0.3);
+        sim.lock_control(0.45);
+        assert!(!sim.is_on_rope(), "knockback drops the rope");
+        assert_eq!(sim.state, State::Airborne);
+    }
+
+    #[test]
+    fn respawn_resets_every_rope_to_hanging_still() {
+        let (mut sim, world) = hanging(200.0);
+        sim.rope_swings[0] = RopeSwing { angle: 1.0, ang_vel: 1.0 };
+        sim.respawn();
+        sim.step(&world, none(), DT);
+        assert!(!sim.is_on_rope());
+        assert_eq!(sim.rope_swing(0), RopeSwing::default());
     }
 
     #[test]
@@ -874,7 +1277,7 @@ mod tests {
     #[test]
     fn coyote_time_allows_a_jump_just_after_leaving_a_ledge() {
         // Ledge ends at x = 0; walking right steps off it.
-        let w = World { polys: vec![rect(-500.0, 500.0, 0.0, 900.0, false)] };
+        let w = World { polys: vec![rect(-500.0, 500.0, 0.0, 900.0, false)], ropes: vec![] };
         let jump = Input { jump: true, ..none() };
 
         let settle = |sim: &mut Simulation| {
@@ -937,7 +1340,7 @@ mod tests {
 
     #[test]
     fn coyote_window_is_exactly_coyote_time_at_its_boundaries() {
-        let w = World { polys: vec![rect(-500.0, 500.0, 0.0, 900.0, false)] };
+        let w = World { polys: vec![rect(-500.0, 500.0, 0.0, 900.0, false)], ropes: vec![] };
         let jump = Input { jump: true, ..none() };
         let right = Input { right: true, ..none() };
 
@@ -1104,6 +1507,7 @@ mod tests {
                 rect(-5000.0, 500.0, 5000.0, 900.0, false),
                 rect(200.0, -500.0, 400.0, 500.0, climbable),
             ],
+            ropes: vec![],
         }
     }
 

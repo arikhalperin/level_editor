@@ -39,6 +39,7 @@ pub const NO_TOOLBOX: &str = "Toolbox could not be loaded (src/toolboxes.json)."
 pub enum EscapeAction {
     CloseHelp,
     CancelPolygon,
+    CancelRope,
     ExitEditMode,
     Nothing,
 }
@@ -49,9 +50,18 @@ pub fn escape_closes_help(help_open: bool) -> bool {
     help_open
 }
 
-pub fn escape_action(help_open: bool, drawing_polygon: bool, editing_polygon: bool) -> EscapeAction {
+pub fn escape_action(
+    help_open: bool,
+    drawing_polygon: bool,
+    editing_polygon: bool,
+    drawing_rope: bool,
+) -> EscapeAction {
     if escape_closes_help(help_open) {
         EscapeAction::CloseHelp
+    } else if drawing_rope {
+        // The rope is the most recent thing started: the Rope tool must be active for
+        // one to be in progress, and switching tools cancels it.
+        EscapeAction::CancelRope
     } else if drawing_polygon {
         EscapeAction::CancelPolygon
     } else if editing_polygon {
@@ -82,6 +92,7 @@ fn kind_hint(tool_type: &str) -> &'static str {
     match tool_type {
         "bitmap" => "click to place a sprite",
         "polygon" => "click vertices; Enter, double-click or right-click to finish",
+        "rope" => "click the anchor, then click the bottom end",
         "tool" => "mode",
         _ => "unknown kind",
     }
@@ -96,7 +107,7 @@ impl HelpContent {
             HelpEntry::new("Enter", "Finish the polygon being drawn (needs at least 3 vertices)."),
             HelpEntry::new(
                 "Escape",
-                "Close this help; otherwise cancel the polygon being drawn or leave polygon edit mode.",
+                "Close this help; otherwise cancel the polygon or rope being drawn or leave polygon edit mode.",
             ),
             HelpEntry::new(
                 "Delete / Backspace",
@@ -112,13 +123,13 @@ impl HelpContent {
             ),
             HelpEntry::new(
                 "A / D  or  \u{2190} / \u{2192}",
-                "Move the character left and right (play mode).",
+                "Move the character left and right; on a rope, pump the swing (play mode).",
             ),
             HelpEntry::new(
                 "W / S  or  \u{2191} / \u{2193}",
-                "Look up and down; down also fast-falls and climbs down (play mode).",
+                "Look up and down; down also fast-falls; hold beside a wall or rope to grab and climb it (play mode).",
             ),
-            HelpEntry::new("Space or Z", "Jump, and wall jump off a wall (play mode)."),
+            HelpEntry::new("Space or Z", "Jump, wall jump off a wall, or let go of a rope with a hop (play mode)."),
             HelpEntry::new("Shift, K or C", "Dash (play mode)."),
             HelpEntry::new("J or X", "Swing the katana; hold up or down to slash that way (play mode)."),
             HelpEntry::new("L", "Raise the shield: 2 s invulnerable, then a 5 s cooldown (play mode)."),
@@ -154,6 +165,10 @@ impl HelpContent {
                 "Move the selected vertex; click a vertex first to select it.",
             ),
             HelpEntry::new("Click outside the polygon (edit mode)", "Leave vertex-edit mode."),
+            HelpEntry::new(
+                "Left click — Rope tool",
+                "First click sets the top anchor, second click sets the bottom end (Escape cancels).",
+            ),
             HelpEntry::new("Drag the toolbox", "Move the toolbox anywhere on screen."),
             HelpEntry::new(
                 "Click / drag the minimap",
@@ -228,10 +243,10 @@ mod tests {
 
     #[test]
     fn escape_closes_help_first_regardless_of_polygon_state() {
-        assert_eq!(escape_action(true, true, true), EscapeAction::CloseHelp);
-        assert_eq!(escape_action(true, true, false), EscapeAction::CloseHelp);
-        assert_eq!(escape_action(true, false, true), EscapeAction::CloseHelp);
-        assert_eq!(escape_action(true, false, false), EscapeAction::CloseHelp);
+        assert_eq!(escape_action(true, true, true, false), EscapeAction::CloseHelp);
+        assert_eq!(escape_action(true, true, false, false), EscapeAction::CloseHelp);
+        assert_eq!(escape_action(true, false, true, false), EscapeAction::CloseHelp);
+        assert_eq!(escape_action(true, false, false, false), EscapeAction::CloseHelp);
     }
 
     #[test]
@@ -242,7 +257,7 @@ mod tests {
             for editing in [true, false] {
                 assert_eq!(
                     escape_closes_help(true),
-                    escape_action(true, drawing, editing) == EscapeAction::CloseHelp
+                    escape_action(true, drawing, editing, false) == EscapeAction::CloseHelp
                 );
             }
         }
@@ -250,10 +265,18 @@ mod tests {
 
     #[test]
     fn escape_keeps_previous_meaning_when_help_is_closed() {
-        assert_eq!(escape_action(false, true, true), EscapeAction::CancelPolygon);
-        assert_eq!(escape_action(false, true, false), EscapeAction::CancelPolygon);
-        assert_eq!(escape_action(false, false, true), EscapeAction::ExitEditMode);
-        assert_eq!(escape_action(false, false, false), EscapeAction::Nothing);
+        assert_eq!(escape_action(false, true, true, false), EscapeAction::CancelPolygon);
+        assert_eq!(escape_action(false, true, false, false), EscapeAction::CancelPolygon);
+        assert_eq!(escape_action(false, false, true, false), EscapeAction::ExitEditMode);
+        assert_eq!(escape_action(false, false, false, false), EscapeAction::Nothing);
+    }
+
+    #[test]
+    fn escape_cancels_a_rope_in_progress_after_help_and_polygon_drawing() {
+        assert_eq!(escape_action(true, false, false, true), EscapeAction::CloseHelp);
+        assert_eq!(escape_action(false, true, false, true), EscapeAction::CancelRope, "a rope beats a stale polygon");
+        assert_eq!(escape_action(false, false, true, true), EscapeAction::CancelRope, "a rope beats edit mode");
+        assert_eq!(escape_action(false, false, false, true), EscapeAction::CancelRope);
     }
 
     #[test]
@@ -315,6 +338,7 @@ mod tests {
             "Right click — polygon tool",
             "Drag (edit mode)",
             "Click outside the polygon (edit mode)",
+            "Left click — Rope tool",
             "Drag the toolbox",
             "Click / drag the minimap",
         ] {

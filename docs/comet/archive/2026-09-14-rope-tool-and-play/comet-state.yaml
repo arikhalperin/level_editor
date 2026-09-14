@@ -1,0 +1,2173 @@
+schema: comet.native.v4
+name: rope-tool-and-play
+language: en
+phase: archive
+status: done
+state_version: 7
+brief: brief.md
+spec_changes:
+  - capability: editor-help-screen
+    operation: modify
+    source: specs/editor-help-screen/spec.md
+  - capability: play-simulation
+    operation: modify
+    source: specs/play-simulation/spec.md
+  - capability: rope-swing
+    operation: create
+    source: specs/rope-swing/spec.md
+  - capability: rope-tool
+    operation: create
+    source: specs/rope-tool/spec.md
+workspace:
+  isolation: current
+  change_branch: main
+  target_branch: main
+  finish: null
+loop:
+  stage: done
+  goal_cycle: 1
+  iteration: 1
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: null
+acceptance:
+  - id: A1
+    source: brief.md
+    text: A1 — With the Rope tool active, a first click at world (400, 100) and a
+      second click at (430, 400) creates one rope anchored at (400, 100) with
+      length 300. A second click above the anchor or less than 60 px below it
+      does nothing; Escape (or switching tools) cancels the rope in progress; a
+      preview line follows the cursor between the two clicks.
+    result: passed
+    reason:
+      text: RopeEntity::place (entities.rs) sets the anchor on the first click,
+        finishes with length=click.y-anchor.y (x ignored) only when >=
+        ROPE_MIN_LENGTH, else Ignore; unit test
+        placement_takes_the_anchor_then_a_lower_click_and_ignores_the_rest
+        covers (400,100)->(430,400)=300, above and too-close; main.rs clears
+        drawing_rope on tool switch and EscapeAction::CancelRope, and paints a
+        ghost line from anchor to the cursor.
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: A2 — A rope is drawn as a vertical line from its anchor with a small
+      anchor knob. With the Select tool, clicking within 8 px of the line
+      selects it and dragging moves the whole rope; the Delete tool removes it;
+      undo and redo apply to placing, moving and deleting a rope.
+    result: passed
+    reason:
+      text: RopeEntity::paint draws a 6 px line plus an anchor disc; contains_point
+        uses distance_to_segment <= ROPE_HIT_DISTANCE 8 (tested at 7 px in / 10
+        px out); translate moves the anchor and keeps length; Select/Erase arms
+        in main.rs use the generic Entity::contains_point/translate/remove paths
+        and save_state, so undo/redo cover place, move and delete.
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: A3 — Saving writes the rope as
+      `{"type":"bitmap","position":[400,100],"bitmap_name":"rope_tool","size":[6,300]}`;
+      loading that file restores a rope with the same anchor and length; a level
+      file with no ropes loads exactly as before.
+    result: passed
+    reason:
+      text: to_level_entity emits LevelEntity::Bitmap{position:[anchor],
+        bitmap_name:"rope_tool", size:[6,length]} and from_level_entity branches
+        on ROPE_BITMAP; test
+        a_rope_saves_as_a_rope_tool_bitmap_entry_and_loads_back round-trips
+        through serde JSON; other_bitmaps_still_load_as_bitmaps and the
+        untouched level_data.rs cover files without ropes and the schema.
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: A4 — In play, holding up or down while the character's centre is within 30
+      px of the rope's line (and at least 40 px below the anchor) attaches the
+      character to the rope at that height; the overlay state reads `rope`; the
+      character hangs at the hold point with zero velocity if it arrived slowly.
+    result: passed
+    reason:
+      text: try_grab_rope requires axis_y != 0, no regrab lock, not dashing, distance
+        <= ROPE_GRAB_HALF_WIDTH to the segment from ROPE_MIN_HOLD below the
+        anchor to the end; state becomes State::Rope labelled "rope"; test
+        holding_up_beside_a_rope_grabs_it_at_that_height asserts the hold
+        height, label and zero-velocity snap (vel = t*(hold*omega) with omega
+        from v=0).
+      truncated: false
+  - id: A5
+    source: brief.md
+    text: A5 — Released from rest at 30° with no input, the character swings through
+      the bottom and back to within 10% of a period of `2π·sqrt(L / GRAVITY)`,
+      and the damped swing settles to hanging straight down.
+    result: passed
+    reason:
+      text: step_rope integrates omega' = -(G/L) sin(theta) - damping*omega; test
+        a_rope_swings_with_the_pendulum_period_and_settles measures the
+        zero-crossing period from 30 deg within 10% of 2*pi*sqrt(L/G) and
+        asserts |theta| < 0.01 after 30 s.
+      truncated: false
+  - id: A6
+    source: brief.md
+    text: A6 — From a hanging rest, holding right builds a swing; the rope's angle
+      never exceeds 75° from vertical however long the key is held.
+    result: passed
+    reason:
+      text: Pump a_t = axis_x*ROPE_PUMP_ACCEL feeds omega' and the angle is clamped to
+        +-ROPE_MAX_ANGLE_DEG with omega zeroed outward; test
+        pumping_builds_a_swing_capped_at_the_max_angle holds right for 20 s and
+        asserts angle <= cap and reaches it.
+      truncated: false
+  - id: A7
+    source: brief.md
+    text: A7 — Up / down move the hold point along the rope at `CLIMB_SPEED` 140
+      px/s, no closer than 40 px to the anchor and no further than the rope's
+      length.
+    result: passed
+    reason:
+      text: hold += axis_y*CLIMB_SPEED*dt (axis_y = down - up, so up shortens) clamped
+        to [ROPE_MIN_HOLD, length]; test
+        up_and_down_move_the_hold_along_the_rope_within_bounds checks 140 px/s
+        and both bounds.
+      truncated: false
+  - id: A8
+    source: brief.md
+    text: A8 — Pressing jump while on the rope releases the character with the
+      swing's tangential velocity plus an upward speed equal to a
+      `WALL_JUMP_HEIGHT` 190 px jump; the rope cannot be re-grabbed for 0.25 s;
+      landing on ground afterwards behaves as any landing.
+    result: passed
+    reason:
+      text: On jump_buffer the release sets vel = t*(L*omega) + (0,
+        -jump_speed(ROPE_RELEASE_HOP_HEIGHT)), air_dashes_used = 0,
+        regrab_lock_left = 0.25, state Airborne; test
+        jump_releases_with_the_swing_velocity_plus_a_hop_and_locks_regrab
+        verifies velocity, the hop, the rope swinging on and no grab during the
+        lock; landing then goes through the normal integrate path.
+      truncated: false
+  - id: A9
+    source: brief.md
+    text: A9 — Jumping into a rope at run speed starts a swing whose initial angular
+      velocity equals the character's velocity projected on the rope's tangent
+      divided by the hold length.
+    result: passed
+    reason:
+      text: On grab omega = vel.dot(tangent)/hold; test
+        running_into_a_rope_carries_momentum_into_the_swing asserts omega ~
+        PLAYER_RUN_SPEED/L.
+      truncated: false
+  - id: A10
+    source: brief.md
+    text: A10 — Hitting a solid polygon while swinging pushes the character out as
+      usual and stops the swing; being hurt or dying drops the rope; dash and
+      wall jump are unavailable while on a rope.
+    result: passed
+    reason:
+      text: step_rope runs deepest_overlap push-out, then re-aims theta = atan2(dx,dy)
+        and zeroes omega (test a_wall_in_the_swing_path_stops_the_swing);
+        lock_control/apply_knockback call drop_rope and death restarts via
+        Simulation::new; step returns before try_start_dash/step_jump while
+        rope_hold is set (test
+        being_hurt_drops_the_rope_and_dash_cannot_start_on_it).
+      truncated: false
+  - id: A11
+    source: brief.md
+    text: A11 — After release the rope keeps swinging with damping until it hangs
+      still; a grab takes the rope's current angle; while editing (not playing)
+      every rope hangs straight down.
+    result: passed
+    reason:
+      text: step_free_ropes integrates every unheld rope with damping and snaps to
+        rest below 0.5 deg / 0.02 rad/s; try_grab_rope keeps swing.angle;
+        main.rs draws Entity::Rope via entity.draw (straight down) when
+        self.play is None.
+      truncated: false
+  - id: A12
+    source: brief.md
+    text: A12 — Play never modifies a rope entity and never affects
+      `has_unsaved_changes()`.
+    result: passed
+    reason:
+      text: Rope swings live in Simulation::rope_swings, not in entities; the
+        Rope-tool arm and save_state sit in the non-play branch of the click
+        handler; respawn/restart rebuild the Simulation so every rope is reset
+        (test respawn_resets_every_rope_to_hanging_still); stop_play drops the
+        session.
+      truncated: false
+  - id: A13
+    source: brief.md
+    text: A13 — The help window's Tools section lists `Rope` with the kind hint
+      `click the anchor, then click the bottom end`; its Mouse section has a
+      Rope-tool row; the up/down, left/right, jump and Escape rows mention
+      ropes; the README, `LEVEL_FORMAT.md` and `BEVY_INTEGRATION.md` describe
+      the rope entry.
+    result: passed
+    reason:
+      text: help.rs adds kind_hint("rope") = "click the anchor, then click the bottom
+        end", the "Left click — Rope tool" mouse row, and the rope wording in
+        the Escape, A/D, W/S and Space rows; README, LEVEL_FORMAT.md and
+        BEVY_INTEGRATION.md all describe the rope entry (grep confirmed).
+      truncated: false
+  - id: A14
+    source: brief.md
+    text: A14 — `game_config.rs` carries the rope constants (`ROPE_BITMAP`,
+      `ROPE_THICKNESS`, `ROPE_MIN_LENGTH`, `ROPE_MIN_HOLD`,
+      `ROPE_GRAB_HALF_WIDTH`, `ROPE_PUMP_ACCEL`, `ROPE_DAMPING`,
+      `ROPE_MAX_ANGLE_DEG`, `ROPE_RELEASE_HOP_HEIGHT`, `ROPE_REGRAB_LOCK`) with
+      the equations in the `rope-swing` spec as the model for the game.
+    result: passed
+    reason:
+      text: game_config.rs declares ROPE_BITMAP "rope_tool", ROPE_THICKNESS 6,
+        ROPE_MIN_LENGTH 60, ROPE_MIN_HOLD 40, ROPE_GRAB_HALF_WIDTH 30,
+        ROPE_PUMP_ACCEL 900, ROPE_DAMPING 0.35, ROPE_MAX_ANGLE_DEG 75,
+        ROPE_RELEASE_HOP_HEIGHT = WALL_JUMP_HEIGHT, ROPE_REGRAB_LOCK 0.25 with a
+        comment naming it the game's model.
+      truncated: false
+  - id: A15
+    source: brief.md
+    text: A15 — `cargo test` and `cargo build` pass, with unit tests for placement,
+      serialisation round trip, and the pendulum (period, angle cap, pump,
+      climb, release, regrab lock).
+    result: passed
+    reason:
+      text: "Re-ran cargo test: 185 unit tests + 1 integration test pass, including
+        placement, round-trip, period, cap, pump, climb, release/regrab-lock
+        tests; cargo build finishes with only pre-existing warnings."
+      truncated: false
+  - id: A16
+    source: specs/editor-help-screen/spec.md
+    text: Complete target behaviour of the in-app help screen.
+    result: passed
+    reason:
+      text: The spec is the complete help behaviour; every listed row and rule is
+        implemented in help.rs/main.rs and the completeness tests pass.
+      truncated: false
+  - id: A17
+    source: specs/editor-help-screen/spec.md
+    text: "> Amended 2026-09-14 by the rope-tool-and-play change: the Mouse section
+      gained a Rope-tool row, the Tools section gained the `rope` kind, and the
+      Escape, up/down, left/right and jump rows mention ropes. The completeness
+      guarantee is unchanged."
+    result: passed
+    reason:
+      text: "Amendment note matches the diff: Rope-tool mouse row, rope kind hint, and
+        rope wording in the Escape/up-down/left-right/jump rows were added
+        without removing any row."
+      truncated: false
+  - id: A18
+    source: specs/editor-help-screen/spec.md
+    text: "> Amended 2026-09-14 by the minimap-mouse-navigation change: the Mouse
+      section gained a row for pressing / dragging on the minimap. The
+      completeness guarantee is unchanged."
+    result: passed
+    reason:
+      text: Amendment note describes prior changes; the diff does not touch those rows
+        and the help tests still pass.
+      truncated: false
+  - id: A19
+    source: specs/editor-help-screen/spec.md
+    text: "> Amended 2026-09-12 by the play-combat-simulation change: the Keyboard
+      section gained the attack, shield and debug keys (`J`/`X`, `L`, `F2`) and
+      the `R` row now describes restarting the run."
+    result: passed
+    reason:
+      text: Amendment note describes prior changes; the diff does not touch those rows
+        and the help tests still pass.
+      truncated: false
+  - id: A20
+    source: specs/editor-help-screen/spec.md
+    text: "> Amended 2026-09-12 by the level-size-and-play-simulation change: the
+      Keyboard section gained the play-mode keys, the Mouse section a play-mode
+      click row, and the former four-item \"File menu\" section became a
+      \"Menus\" section covering the File, Level, Play and Help menus. The
+      help's guarantee — it lists every key and command the editor handles — is
+      unchanged."
+    result: passed
+    reason:
+      text: Amendment note describes prior changes; the diff does not touch those rows
+        and the help tests still pass.
+      truncated: false
+  - id: A21
+    source: specs/editor-help-screen/spec.md
+    text: The menu bar has a `Help` menu to the right of `File`. Its single item,
+      `Keyboard & Commands`, opens the help window (and closes the menu).
+    result: passed
+    reason:
+      text: Help open/close, F1/?, close button, view-only state, window and
+        ScrollArea presentation are untouched by the diff and covered by the
+        existing help tests.
+      truncated: false
+  - id: A22
+    source: specs/editor-help-screen/spec.md
+    text: "`F1` toggles the help window. `?` (`egui::Key::Questionmark`, i.e.
+      Shift+/) toggles it too. Both toggles are ignored while a text field wants
+      keyboard input (`ctx.wants_keyboard_input()`)."
+    result: passed
+    reason:
+      text: Help open/close, F1/?, close button, view-only state, window and
+        ScrollArea presentation are untouched by the diff and covered by the
+        existing help tests.
+      truncated: false
+  - id: A23
+    source: specs/editor-help-screen/spec.md
+    text: The window's title-bar close button closes it.
+    result: passed
+    reason:
+      text: Help open/close, F1/?, close button, view-only state, window and
+        ScrollArea presentation are untouched by the diff and covered by the
+        existing help tests.
+      truncated: false
+  - id: A24
+    source: specs/editor-help-screen/spec.md
+    text: "`Escape` has a strict priority order: if the help window is open, one
+      press closes it and that press is fully consumed — it does not cancel a
+      polygon in progress or leave polygon edit mode. If the help window is
+      closed, `Escape` behaves exactly as before (cancel polygon drawing, else
+      exit polygon edit mode)."
+    result: passed
+    reason:
+      text: escape_action returns CloseHelp whenever help_open regardless of
+        rope/polygon state (test
+        escape_closes_help_first_regardless_of_polygon_state plus the rope
+        test's first assertion); with help closed the polygon/edit-mode
+        behaviour is unchanged.
+      truncated: false
+  - id: A25
+    source: specs/editor-help-screen/spec.md
+    text: "Help state (`help_open: bool`) is editor view state: it is not saved to
+      the level file, not restored between runs, and does not affect
+      `has_unsaved_changes()`."
+    result: passed
+    reason:
+      text: Help open/close, F1/?, close button, view-only state, window and
+        ScrollArea presentation are untouched by the diff and covered by the
+        existing help tests.
+      truncated: false
+  - id: A26
+    source: specs/editor-help-screen/spec.md
+    text: "A floating `egui::Window` titled `Keyboard & Commands`, draggable and
+      resizable, non-modal: while it is open the canvas, toolbox, menus,
+      arrow-key scrolling and every other command keep working; only clicks
+      inside the window are captured by it."
+    result: passed
+    reason:
+      text: Help open/close, F1/?, close button, view-only state, window and
+        ScrollArea presentation are untouched by the diff and covered by the
+        existing help tests.
+      truncated: false
+  - id: A27
+    source: specs/editor-help-screen/spec.md
+    text: The body is a vertical `ScrollArea` with a bounded maximum height (≈ 70%
+      of the screen height) so the whole window remains on screen at the
+      editor's minimum size of 800×720 and long content is scrolled rather than
+      clipped.
+    result: passed
+    reason:
+      text: Help open/close, F1/?, close button, view-only state, window and
+        ScrollArea presentation are untouched by the diff and covered by the
+        existing help tests.
+      truncated: false
+  - id: A28
+    source: specs/editor-help-screen/spec.md
+    text: "Sections appear in this order with a heading each: **Keyboard**,
+      **Mouse**, **Tools**, **Menus**. Each entry is a two-column row: the key /
+      gesture / tool on the left, its effect on the right."
+    result: passed
+    reason:
+      text: Help open/close, F1/?, close button, view-only state, window and
+        ScrollArea presentation are untouched by the diff and covered by the
+        existing help tests.
+      truncated: false
+  - id: A29
+    source: specs/editor-help-screen/spec.md
+    text: "Lists every key the input handler responds to, and nothing else:"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A30
+    source: specs/editor-help-screen/spec.md
+    text: "| Key | Effect |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A31
+    source: specs/editor-help-screen/spec.md
+    text: "| ← → ↑ ↓ | Scroll the canvas. Hold to accelerate; release to glide to a
+      stop. |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A32
+    source: specs/editor-help-screen/spec.md
+    text: "| Enter | Finish the polygon being drawn (needs ≥ 3 vertices). |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A33
+    source: specs/editor-help-screen/spec.md
+    text: "| Escape | Close this help; otherwise cancel the polygon or rope being
+      drawn or leave polygon edit mode. |"
+    result: passed
+    reason:
+      text: Escape row text in help.rs is exactly "Close this help; otherwise cancel
+        the polygon or rope being drawn or leave polygon edit mode."
+      truncated: false
+  - id: A34
+    source: specs/editor-help-screen/spec.md
+    text: "| Delete / Backspace | Remove the selected vertex of the polygon being
+      edited (a polygon keeps at least 3). |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A35
+    source: specs/editor-help-screen/spec.md
+    text: "| Undo | Undo the last change. |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A36
+    source: specs/editor-help-screen/spec.md
+    text: "| Redo | Redo the last undone change. |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A37
+    source: specs/editor-help-screen/spec.md
+    text: "| F1 / ? | Show or hide this help. |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A38
+    source: specs/editor-help-screen/spec.md
+    text: "| F5 | Start or stop play mode. |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A39
+    source: specs/editor-help-screen/spec.md
+    text: "| R | Respawn the character at the spawn point (play mode). |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A40
+    source: specs/editor-help-screen/spec.md
+    text: "| A / D or ← / → | Move the character left and right; on a rope, pump the
+      swing (play mode). |"
+    result: passed
+    reason:
+      text: A/D row text is exactly "Move the character left and right; on a rope,
+        pump the swing (play mode)."
+      truncated: false
+  - id: A41
+    source: specs/editor-help-screen/spec.md
+    text: "| W / S or ↑ / ↓ | Look up and down; down also fast-falls; hold beside a
+      wall or rope to grab and climb it (play mode). |"
+    result: passed
+    reason:
+      text: W/S row text is exactly "Look up and down; down also fast-falls; hold
+        beside a wall or rope to grab and climb it (play mode)."
+      truncated: false
+  - id: A42
+    source: specs/editor-help-screen/spec.md
+    text: "| Space or Z | Jump, wall jump off a wall, or let go of a rope with a hop
+      (play mode). |"
+    result: passed
+    reason:
+      text: Space/Z row text is exactly "Jump, wall jump off a wall, or let go of a
+        rope with a hop (play mode)."
+      truncated: false
+  - id: A43
+    source: specs/editor-help-screen/spec.md
+    text: "| Shift, K or C | Dash (play mode). |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A44
+    source: specs/editor-help-screen/spec.md
+    text: "| J or X | Swing the katana; hold up or down to slash that way (play
+      mode). |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A45
+    source: specs/editor-help-screen/spec.md
+    text: "| L | Raise the shield: 2 s invulnerable, then a 5 s cooldown (play
+      mode). |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A46
+    source: specs/editor-help-screen/spec.md
+    text: "| F2 | Show or hide the combat debug view (slash hitbox, orc ranges). |"
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A47
+    source: specs/editor-help-screen/spec.md
+    text: Undo / Redo labels are produced by `egui::Context::format_shortcut` for
+      `Cmd+Z` and `Shift+Cmd+Z` (`Modifiers::COMMAND`, `Modifiers::COMMAND |
+      Modifiers::SHIFT`), so macOS shows ⌘Z / ⇧⌘Z and other platforms show
+      Ctrl+Z / Shift+Ctrl+Z.
+    result: passed
+    reason:
+      text: Keyboard section rows and the format_shortcut labels are unchanged by the
+        diff; no new key was added to the input handler and the existing
+        keyboard-completeness tests pass.
+      truncated: false
+  - id: A48
+    source: specs/editor-help-screen/spec.md
+    text: "| Gesture | Effect |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A49
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click (play mode) | Move the spawn point and respawn the character
+      there. The level is never changed while playing. |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A50
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — Select tool | Select the entity under the cursor; drag to
+      move it. Click empty canvas to deselect. |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A51
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — Delete tool | Remove the entity under the cursor. |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A52
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — polygon tools | Add a vertex at the cursor. |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A53
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — bitmap tools | Place the sprite at the cursor (a
+      translucent preview follows the cursor). |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A54
+    source: specs/editor-help-screen/spec.md
+    text: "| Double-click — polygon tool | Close and finish the polygon (needs ≥ 3
+      vertices). |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A55
+    source: specs/editor-help-screen/spec.md
+    text: "| Double-click — Select tool on a polygon | Enter vertex-edit mode for
+      that polygon. |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A56
+    source: specs/editor-help-screen/spec.md
+    text: "| Right click — polygon tool | Finish the polygon being drawn. |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A57
+    source: specs/editor-help-screen/spec.md
+    text: "| Drag (edit mode) | Move the selected vertex; click a vertex first to
+      select it. |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A58
+    source: specs/editor-help-screen/spec.md
+    text: "| Click outside the polygon (edit mode) | Leave vertex-edit mode. |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A59
+    source: specs/editor-help-screen/spec.md
+    text: "| Left click — Rope tool | First click sets the top anchor, second click
+      sets the bottom end (Escape cancels). |"
+    result: passed
+    reason:
+      text: help.rs adds HelpEntry "Left click — Rope tool" / "First click sets the
+        top anchor, second click sets the bottom end (Escape cancels)." between
+        the edit-mode and toolbox rows, and the mouse completeness test includes
+        it.
+      truncated: false
+  - id: A60
+    source: specs/editor-help-screen/spec.md
+    text: "| Drag the toolbox | Move the toolbox anywhere on screen. |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A61
+    source: specs/editor-help-screen/spec.md
+    text: "| Click / drag the minimap | Jump the view to that part of the level;
+      keep the button down and drag to scroll it live. |"
+    result: passed
+    reason:
+      text: Mouse rows other than the Rope row are unchanged by the diff and the
+        mouse-section completeness test (which lists them all in order) passes.
+      truncated: false
+  - id: A62
+    source: specs/editor-help-screen/spec.md
+    text: "Generated at runtime from `ToolboxLayout.tools` (`src/toolboxes.json`).
+      Every tool appears exactly once, in file order, as: humanised name (e.g.
+      `coin_tool` → `Coin`, `death_trap_tool` → `Death trap`), its
+      `description`, and its kind (`bitmap` — click to place a sprite; `polygon`
+      — click vertices, Enter / double-click / right-click to finish; `rope` —
+      click the anchor, then click the bottom end; `tool` — a mode)."
+    result: passed
+    reason:
+      text: kind_hint maps "rope" to "click the anchor, then click the bottom end";
+        real_toolboxes_json_yields_every_tool_exactly_once loads
+        src/toolboxes.json (now containing rope_tool) and checks each tool once
+        with description and the implemented flag; the main toolbox has a fifth
+        row ["rope_tool"].
+      truncated: false
+  - id: A63
+    source: specs/editor-help-screen/spec.md
+    text: A tool of kind `tool` whose name is neither `select_tool` nor
+      `delete_tool` is not implemented by the editor (it currently falls through
+      to Select); its entry ends with **"— not yet implemented"**. This is
+      derived from the same rule the editor uses to map tool names to modes, not
+      from a hand-maintained list.
+    result: passed
+    reason:
+      text: Not-implemented flagging and the missing-toolbox notice are untouched;
+        tests real_toolboxes_json_yields_every_tool_exactly_once and
+        missing_or_empty_toolbox_shows_a_notice_instead_of_nothing pass.
+      truncated: false
+  - id: A64
+    source: specs/editor-help-screen/spec.md
+    text: If the toolbox layout failed to load, the section shows a single line
+      saying the toolbox could not be loaded, rather than being empty.
+    result: passed
+    reason:
+      text: Not-implemented flagging and the missing-toolbox notice are untouched;
+        tests real_toolboxes_json_yields_every_tool_exactly_once and
+        missing_or_empty_toolbox_shows_a_notice_instead_of_nothing pass.
+      truncated: false
+  - id: A65
+    source: specs/editor-help-screen/spec.md
+    text: "Lists every item in every menu, prefixed by its menu name:"
+    result: passed
+    reason:
+      text: Menus section is not touched by the diff and its existing tests pass.
+      truncated: false
+  - id: A66
+    source: specs/editor-help-screen/spec.md
+    text: "| Item | Effect |"
+    result: passed
+    reason:
+      text: Menus section is not touched by the diff and its existing tests pass.
+      truncated: false
+  - id: A67
+    source: specs/editor-help-screen/spec.md
+    text: "| File → New Level | Start an empty level; asks whether to save first
+      when there are unsaved changes. |"
+    result: passed
+    reason:
+      text: Menus section is not touched by the diff and its existing tests pass.
+      truncated: false
+  - id: A68
+    source: specs/editor-help-screen/spec.md
+    text: "| File → Background Image | Choose a PNG to show behind the level. |"
+    result: passed
+    reason:
+      text: Menus section is not touched by the diff and its existing tests pass.
+      truncated: false
+  - id: A69
+    source: specs/editor-help-screen/spec.md
+    text: "| File → Load Level | Open a level JSON file. |"
+    result: passed
+    reason:
+      text: Menus section is not touched by the diff and its existing tests pass.
+      truncated: false
+  - id: A70
+    source: specs/editor-help-screen/spec.md
+    text: "| File → Save Level | Write the level JSON file. |"
+    result: passed
+    reason:
+      text: Menus section is not touched by the diff and its existing tests pass.
+      truncated: false
+  - id: A71
+    source: specs/editor-help-screen/spec.md
+    text: "| File → Exit | Quit; asks whether to save first when there are unsaved
+      changes. |"
+    result: passed
+    reason:
+      text: Menus section is not touched by the diff and its existing tests pass.
+      truncated: false
+  - id: A72
+    source: specs/editor-help-screen/spec.md
+    text: "| Level → Level Size… | Set the level's width and height in pixels; saved
+      with the level. |"
+    result: passed
+    reason:
+      text: Menus section is not touched by the diff and its existing tests pass.
+      truncated: false
+  - id: A73
+    source: specs/editor-help-screen/spec.md
+    text: "| Play → Play / Stop | Start or stop play mode (same as F5). |"
+    result: passed
+    reason:
+      text: Menus section is not touched by the diff and its existing tests pass.
+      truncated: false
+  - id: A74
+    source: specs/editor-help-screen/spec.md
+    text: "| Help → Keyboard & Commands | Show this window. |"
+    result: passed
+    reason:
+      text: Menus section is not touched by the diff and its existing tests pass.
+      truncated: false
+  - id: A75
+    source: specs/editor-help-screen/spec.md
+    text: "Content is built by a pure `help` module: `HelpContent::build(tools:
+      Option<&[ToolDef]>, undo_label: &str, redo_label: &str) -> HelpContent`
+      with `keyboard`, `mouse`, `tools`, `file` entry lists, plus
+      `humanize_tool_name` and `is_tool_implemented` helpers, and
+      `escape_closes_help(help_open) -> bool`. The module has no egui `Context`
+      / `Ui` dependency so completeness is unit-tested."
+    result: passed
+    reason:
+      text: help module keeps its pure API (escape_action gained a drawing_rope bool,
+        no egui dependency); main.rs wires EscapeAction::CancelRope alongside
+        the existing help/polygon handling.
+      truncated: false
+  - id: A76
+    source: specs/editor-help-screen/spec.md
+    text: "`main.rs` owns `help_open`, renders the window from `HelpContent`, and
+      wires the menu item, `F1`, `?` and the Escape priority."
+    result: passed
+    reason:
+      text: help module keeps its pure API (escape_action gained a drawing_rope bool,
+        no egui dependency); main.rs wires EscapeAction::CancelRope alongside
+        the existing help/polygon handling.
+      truncated: false
+  - id: A77
+    source: specs/editor-help-screen/spec.md
+    text: A1 — `Help → Keyboard & Commands` opens the help window.
+    result: passed
+    reason:
+      text: Pre-existing help behaviour not touched by the diff; help tests pass.
+      truncated: false
+  - id: A78
+    source: specs/editor-help-screen/spec.md
+    text: A2 — `F1` and `?` each toggle the help window.
+    result: passed
+    reason:
+      text: Pre-existing help behaviour not touched by the diff; help tests pass.
+      truncated: false
+  - id: A79
+    source: specs/editor-help-screen/spec.md
+    text: A3 — With help open, `Escape` closes it and does not cancel a polygon /
+      edit mode; with help closed, `Escape` behaves as before.
+    result: passed
+    reason:
+      text: escape_action returns CloseHelp whenever help_open regardless of
+        rope/polygon state (test
+        escape_closes_help_first_regardless_of_polygon_state plus the rope
+        test's first assertion); with help closed the polygon/edit-mode
+        behaviour is unchanged.
+      truncated: false
+  - id: A80
+    source: specs/editor-help-screen/spec.md
+    text: A4 — The window is closable, draggable and non-modal; arrow-key scrolling
+      and canvas clicks keep working while it is open.
+    result: passed
+    reason:
+      text: Pre-existing help behaviour not touched by the diff; help tests pass.
+      truncated: false
+  - id: A81
+    source: specs/editor-help-screen/spec.md
+    text: A5 — Keyboard section lists every key the editor handles — Arrow keys,
+      Enter, Escape, Delete/Backspace, Undo, Redo, F1 / ?, F5, R, the play-mode
+      movement keys and the combat keys `J`/`X`, `L` and `F2` — and nothing the
+      editor does not handle.
+    result: passed
+    reason:
+      text: Pre-existing help behaviour not touched by the diff; help tests pass.
+      truncated: false
+  - id: A82
+    source: specs/editor-help-screen/spec.md
+    text: A6 — Undo/Redo labels come from `format_shortcut` (⌘ on macOS, Ctrl
+      elsewhere).
+    result: passed
+    reason:
+      text: Pre-existing help behaviour not touched by the diff; help tests pass.
+      truncated: false
+  - id: A83
+    source: specs/editor-help-screen/spec.md
+    text: A7 — Mouse section covers left click per tool (including the Rope tool's
+      two clicks), both double-click meanings, right-click, entity / vertex /
+      toolbox drag, click-outside-to-exit-edit, and click / drag on the minimap.
+    result: passed
+    reason:
+      text: help.rs adds HelpEntry "Left click — Rope tool" / "First click sets the
+        top anchor, second click sets the bottom end (Escape cancels)." between
+        the edit-mode and toolbox rows, and the mouse completeness test includes
+        it.
+      truncated: false
+  - id: A84
+    source: specs/editor-help-screen/spec.md
+    text: A8 — Tools section lists every `toolboxes.json` tool exactly once with
+      description and kind (the `rope` kind reads `click the anchor, then click
+      the bottom end`); `add_point_tool` / `remove_point_tool` flagged "not yet
+      implemented"; `select_tool` / `delete_tool` not flagged.
+    result: passed
+    reason:
+      text: kind_hint maps "rope" to "click the anchor, then click the bottom end";
+        real_toolboxes_json_yields_every_tool_exactly_once loads
+        src/toolboxes.json (now containing rope_tool) and checks each tool once
+        with description and the implemented flag; the main toolbox has a fifth
+        row ["rope_tool"].
+      truncated: false
+  - id: A85
+    source: specs/editor-help-screen/spec.md
+    text: A9 — Menus section lists every item of the File, Level, Play and Help
+      menus, noting Exit's unsaved-changes prompt.
+    result: passed
+    reason:
+      text: Menus section is not touched by the diff and its existing tests pass.
+      truncated: false
+  - id: A86
+    source: specs/editor-help-screen/spec.md
+    text: A10 — Body is in a bounded vertical `ScrollArea`; window fits at 800×720.
+    result: passed
+    reason:
+      text: Pre-existing help behaviour not touched by the diff; help tests pass.
+      truncated: false
+  - id: A87
+    source: specs/editor-help-screen/spec.md
+    text: "A11 — Help state is view-only: not serialised, no effect on
+      unsaved-changes."
+    result: passed
+    reason:
+      text: Pre-existing help behaviour not touched by the diff; help tests pass.
+      truncated: false
+  - id: A88
+    source: specs/play-simulation/spec.md
+    text: "> Amended 2026-09-14 by the rope-tool-and-play change: `rope_tool` bitmap
+      entries become swinging ropes the character can grab, swing on, climb and
+      release (specified in the `rope-swing` capability); the state list and
+      overlay gained `rope`. Everything else is unchanged."
+    result: passed
+    reason:
+      text: 'Amendment note matches: World gained ropes, State::Rope with label
+        "rope", nothing else in play-simulation changed.'
+      truncated: false
+  - id: A89
+    source: specs/play-simulation/spec.md
+    text: "> Amended 2026-09-12 by the play-combat-simulation change: bitmap
+      entities are no longer inert (`orc_tool`, `coin_tool` and
+      `death_trap_tool` gain behaviour, specified in the `play-combat`
+      capability), the input list gained the attack, shield and debug keys, `R`
+      restarts the whole run rather than only respawning, and the overlay gained
+      health, score, coins and shield. Movement, the spawn point, the fixed
+      timestep and the non-destructive guarantee are unchanged."
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A90
+    source: specs/play-simulation/spec.md
+    text: Complete target behaviour of the editor's in-editor play mode after this
+      change is archived.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A91
+    source: specs/play-simulation/spec.md
+    text: Play mode drops a controllable character into the level currently being
+      edited so its geometry can be tested without exporting to the game.
+      Movement reproduces the platformer at
+      `/Users/arikha/bevy_prince_platformer`, whose character is a `bevy-tnua`
+      0.31 floating controller on `bevy_rapier2d` 0.33. That controller is a
+      Bevy-ECS physics plugin and cannot run inside an egui application, so the
+      behaviour here is an independent kinematic reimplementation driven by that
+      project's own tuning constants, transcribed from `src/game/config.rs` with
+      their original names and cited source. Trajectories are close to the
+      game's, not bit-identical; the constants are exact.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A92
+    source: specs/play-simulation/spec.md
+    text: "A `Play` menu carries a `Play / Stop` item, and `F5` is its shortcut;
+      either toggles play mode. Entering spawns the character; leaving removes
+      it and returns the editor to the tool, selection and input handling it had
+      before. `R` restarts the run: the character returns to the spawn point
+      and, per the `play-combat` capability, every orc and coin is restored.
+      Toggles are ignored while a text field wants keyboard input."
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A93
+    source: specs/play-simulation/spec.md
+    text: The spawn point is the last canvas click position in world coordinates, or
+      (100, 100) when nothing has been clicked. A left click during play moves
+      the spawn point and respawns there rather than acting on the level.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A94
+    source: specs/play-simulation/spec.md
+    text: Play mode never modifies the level. While playing, entity placement,
+      selection, dragging, deletion and polygon vertex editing are all disabled;
+      no code path calls `save_state()`; the entity list is unchanged across a
+      play session; and `has_unsaved_changes()` is unaffected by entering,
+      playing or leaving. Play state is never serialised into the level file.
+    result: passed
+    reason:
+      text: The Rope-tool click arm (and its save_state) is inside the `else if
+        !toolbox_click && !help_click` branch reached only when self.play is
+        None; the play branch only moves the spawn; rope swings are Simulation
+        state, never entities.
+      truncated: false
+  - id: A95
+    source: specs/play-simulation/spec.md
+    text: "Collision is taken from the level's polygon entities, mirroring
+      `world_objects::spawn_polygon_collider` in the game: every polygon entity
+      is solid, and a polygon whose type is `wall_tool` is additionally
+      climbable. The game builds each polygon as a `Collider::convex_hull`, so a
+      concave polygon drawn in the editor collides as its convex hull here too.
+      Bitmap entities are not solid. They are not inert either: the
+      `play-combat` capability turns `orc_tool`, `coin_tool` and
+      `death_trap_tool` into orcs, coins and death pits, and the `rope-swing`
+      capability turns `rope_tool` entries into ropes. Every other bitmap stays
+      decorative."
+    result: passed
+    reason:
+      text: collision_world builds World{polys, ropes} with ropes from Entity::Rope
+        entities; bitmaps remain non-solid and rope_tool entries become
+        sim::Rope.
+      truncated: false
+  - id: A96
+    source: specs/play-simulation/spec.md
+    text: The character is a capsule with `PLAYER_CAPSULE_HALF_HEIGHT` 20 and
+      `PLAYER_CAPSULE_RADIUS` 25, drawn as a plain shape with no sprite or
+      animation. It never tunnels through a polygon, including at maximum fall
+      speed.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A97
+    source: specs/play-simulation/spec.md
+    text: "The simulation works directly in the editor's world space: top-left
+      origin, Y increasing downward. Gravity is +Y and jumping is −Y. No Y-flip
+      is introduced; the flip belongs to the game's importer."
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A98
+    source: specs/play-simulation/spec.md
+    text: All values below are the game's constants.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A99
+    source: specs/play-simulation/spec.md
+    text: "| Ability | Behaviour |"
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A100
+    source: specs/play-simulation/spec.md
+    text: "| Run | Horizontal speed saturates at `PLAYER_RUN_SPEED` 600 px/s,
+      accelerating at `PLAYER_GROUND_ACCEL` 4500 px/s² on the ground and
+      `PLAYER_AIR_ACCEL` 3200 px/s² in the air. |"
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A101
+    source: specs/play-simulation/spec.md
+    text: "| Jump | A full-hold jump reaches `JUMP_HEIGHT` 365 px above the standing
+      height. Releasing while rising applies `JUMP_SHORTEN_EXTRA_GRAVITY` for a
+      lower hop; after the apex `JUMP_FALL_EXTRA_GRAVITY` speeds the descent.
+      `MAX_AIR_JUMPS` is 0. |"
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A102
+    source: specs/play-simulation/spec.md
+    text: "| Coyote and buffer | A jump is allowed up to `COYOTE_TIME` 0.12 s after
+      leaving the ground, and a press up to `JUMP_BUFFER_TIME` 0.1 s before
+      landing fires on landing. |"
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A103
+    source: specs/play-simulation/spec.md
+    text: "| Gravity and fall | Base `GRAVITY` 1400 px/s², plus
+      `PLAYER_FREE_FALL_EXTRA_GRAVITY` while free-falling. Holding down
+      multiplies gravity by `FAST_FALL_GRAVITY_MULT` 1.8. Downward speed never
+      exceeds `MAX_FALL_SPEED` 950 px/s. |"
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A104
+    source: specs/play-simulation/spec.md
+    text: "| Dash | `DASH_SPEED` 1500 px/s covering `DASH_DISTANCE` 450 px, then
+      braking to `DASH_BRAKE_TO_SPEED`. `DASH_COOLDOWN` 0.4 s between dashes,
+      `MAX_AIR_DASHES` 1 per airtime reset by landing, and a press is remembered
+      for `DASH_BUFFER_TIME` 0.1 s. |"
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A105
+    source: specs/play-simulation/spec.md
+    text: "| Wall slide | Against a wall, descent is capped at
+      `WALL_SLIDE_MAX_FALL_SPEED` 110 px/s. |"
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A106
+    source: specs/play-simulation/spec.md
+    text: "| Wall jump | Rises `WALL_JUMP_HEIGHT` 190 px and carries
+      `WALL_JUMP_HORIZONTAL_DISTANCE` 170 px away from the wall; horizontal
+      input is ignored for `WALL_JUMP_INPUT_LOCK` 0.18 s, and the jump is still
+      allowed `WALL_COYOTE_TIME` 0.1 s after leaving the wall. |"
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A107
+    source: specs/play-simulation/spec.md
+    text: "| Climb | On a `wall_tool` polygon only, the character clings and moves
+      up or down at `CLIMB_SPEED` 140 px/s, drifting into the wall at
+      `CLIMB_WALL_DRIFT` 60 px/s. A non-`wall_tool` polygon cannot be climbed.
+      |"
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A108
+    source: specs/play-simulation/spec.md
+    text: "| Rope | Holding up or down beside a rope grabs it; the character swings
+      as a damped pendulum pumped by left / right, climbs along it with up /
+      down at `CLIMB_SPEED`, and lets go with jump carrying the swing velocity
+      plus a `WALL_JUMP_HEIGHT` hop. Full model in `rope-swing`. |"
+    result: passed
+    reason:
+      text: 'Rope row in the movement table is implemented by try_grab_rope/step_rope:
+        grab on up/down, damped pendulum pumped by axis_x, climb at CLIMB_SPEED,
+        release with L*omega*t plus a WALL_JUMP_HEIGHT hop; overlay prints
+        play.state.label() which is "rope".'
+      truncated: false
+  - id: A109
+    source: specs/play-simulation/spec.md
+    text: "Bindings match the game's `PlayerBindings` defaults: move left `A` or
+      `←`, move right `D` or `→`, look up `W` or `↑`, look down `S` or `↓`, jump
+      `Space` or `Z`, dash `Shift`, `K` or `C`, attack `J` or `X`, shield `L`.
+      `F2` toggles the combat debug view. Attack and shield belong to the
+      `play-combat` capability. While play mode is active the arrow keys drive
+      the character and do not scroll the canvas; on Stop they scroll the canvas
+      again."
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A110
+    source: specs/play-simulation/spec.md
+    text: While playing, the canvas scroll follows the character using the game's
+      camera constants — `CAMERA_FOLLOW_RATE_X` 7 and `CAMERA_FOLLOW_RATE_Y` 5
+      as per-second exponential smoothing rates, a `CAMERA_DEAD_ZONE_X` of 40
+      px, `CAMERA_OFFSET_Y` 80, and a `CAMERA_FALL_CATCHUP_MULT` of 2.5 once
+      descent exceeds `CAMERA_FALL_SPEED_THRESHOLD` 400 px/s. The character
+      stays on screen while running.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A111
+    source: specs/play-simulation/spec.md
+    text: The simulation advances on a fixed timestep of 1/120 s driven by an
+      accumulator, so the same inputs produce the same trajectory regardless of
+      display refresh rate. The editor repaints every frame while play mode is
+      active.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A112
+    source: specs/play-simulation/spec.md
+    text: A small overlay shows the character's world position, whether it is
+      grounded, and the current state — run, air, dash, wall slide, climb or
+      rope — followed by the health, score, coins, orcs and shield readings the
+      `play-combat` capability adds.
+    result: passed
+    reason:
+      text: State::Rope added with label "rope"; the overlay format string prints
+        play.state.label() after position and grounded.
+      truncated: false
+  - id: A113
+    source: specs/play-simulation/spec.md
+    text: The simulation is a pure module with no egui `Context` or `Ui` dependency,
+      advanced by an explicit `dt`, so constants and trajectories are
+      unit-testable headlessly. `main.rs` owns the play-mode flag, spawn point,
+      input capture, drawing and camera.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A114
+    source: specs/play-simulation/spec.md
+    text: A8 — `Play → Play / Stop` and `F5` each toggle play mode.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A115
+    source: specs/play-simulation/spec.md
+    text: A9 — Spawn is the last click or (100, 100); `R` respawns; a click during
+      play moves the spawn.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A116
+    source: specs/play-simulation/spec.md
+    text: A10 — Play never modifies the level and never affects
+      `has_unsaved_changes()`.
+    result: passed
+    reason:
+      text: The Rope-tool click arm (and its save_state) is inside the `else if
+        !toolbox_click && !help_click` branch reached only when self.play is
+        None; the play branch only moves the spawn; rope swings are Simulation
+        state, never entities.
+      truncated: false
+  - id: A117
+    source: specs/play-simulation/spec.md
+    text: A11 — Stop restores the previous tool and normal editor input.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A118
+    source: specs/play-simulation/spec.md
+    text: A12 — Polygons are solid; the character lands on them and never tunnels.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A119
+    source: specs/play-simulation/spec.md
+    text: A13 — Run saturates at 600 px/s, reached in about 0.13 s from rest.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A120
+    source: specs/play-simulation/spec.md
+    text: A14 — A full-hold jump reaches about 365 px; an early release is
+      measurably lower.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A121
+    source: specs/play-simulation/spec.md
+    text: A15 — Coyote time 0.12 s and jump buffer 0.1 s both work at their
+      boundaries.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A122
+    source: specs/play-simulation/spec.md
+    text: A16 — Terminal velocity 950 px/s; holding down multiplies gravity by 1.8.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A123
+    source: specs/play-simulation/spec.md
+    text: A17 — Dash covers about 450 px at up to 1500 px/s, 0.4 s cooldown, exactly
+      one air dash.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A124
+    source: specs/play-simulation/spec.md
+    text: A18 — Wall slide caps descent at 110 px/s; wall jump gives about 190 px up
+      and 170 px across with a 0.18 s input lock.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A125
+    source: specs/play-simulation/spec.md
+    text: A19 — Climb works at 140 px/s on a `wall_tool` polygon and not on a plain
+      polygon.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A126
+    source: specs/play-simulation/spec.md
+    text: A20 — Identical trajectories at 60 Hz and 144 Hz.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A127
+    source: specs/play-simulation/spec.md
+    text: A21 — The camera follows the character while playing.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A128
+    source: specs/play-simulation/spec.md
+    text: A22 — Arrow keys drive the character while playing and scroll the canvas
+      when stopped.
+    result: passed
+    reason:
+      text: Pre-existing play-simulation behaviour; the diff only adds rope code paths
+        gated on rope_hold/ropes and all existing sim/combat tests still pass.
+      truncated: false
+  - id: A129
+    source: specs/play-simulation/spec.md
+    text: "A23 — A `rope_tool` entry is a rope in play: grab, swing, climb and
+      release behave as the `rope-swing` capability specifies, and the overlay
+      shows `rope` while held."
+    result: passed
+    reason:
+      text: 'Rope row in the movement table is implemented by try_grab_rope/step_rope:
+        grab on up/down, damped pendulum pumped by axis_x, climb at CLIMB_SPEED,
+        release with L*omega*t plus a WALL_JUMP_HEIGHT hop; overlay prints
+        play.state.label() which is "rope".'
+      truncated: false
+  - id: A130
+    source: specs/rope-swing/spec.md
+    text: "Complete target behaviour of ropes in the editor's play simulation. This
+      is also the reference model for the Bevy game: the constants are declared
+      in `game_config.rs` with the same names the game will use, and the
+      equations below are what both implementations integrate. World space here
+      is the editor's (Y-down); the game flips Y as it does for all level data."
+    result: passed
+    reason:
+      text: rope-swing spec constants are all in game_config.rs and sim.rs integrates
+        the listed equations in editor Y-down space.
+      truncated: false
+  - id: A131
+    source: specs/rope-swing/spec.md
+    text: "| Name | Value | Meaning |"
+    result: passed
+    reason:
+      text: Constants table header; all rows verified below.
+      truncated: false
+  - id: A132
+    source: specs/rope-swing/spec.md
+    text: '| `ROPE_BITMAP` | `"rope_tool"` | Level `bitmap_name` the importers turn
+      into a rope. |'
+    result: passed
+    reason:
+      text: 'ROPE_BITMAP: &str = "rope_tool" in game_config.rs.'
+      truncated: false
+  - id: A133
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_THICKNESS` | 6 px | Saved `size.x` and drawn line width. |"
+    result: passed
+    reason:
+      text: ROPE_THICKNESS = 6.0, used for size[0] and the drawn line width.
+      truncated: false
+  - id: A134
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_MIN_LENGTH` | 60 px | Shortest rope the tool creates or the
+      loader accepts. |"
+    result: passed
+    reason:
+      text: ROPE_MIN_LENGTH = 60.0, enforced by RopeEntity::new and RopeEntity::place.
+      truncated: false
+  - id: A135
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_MIN_HOLD` | 40 px | Closest the hold point gets to the anchor. |"
+    result: passed
+    reason:
+      text: ROPE_MIN_HOLD = 40.0, the lower clamp of the hold length.
+      truncated: false
+  - id: A136
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_GRAB_HALF_WIDTH` | 30 px | Max distance from the character's
+      centre to the rope line for a grab. |"
+    result: passed
+    reason:
+      text: ROPE_GRAB_HALF_WIDTH = 30.0 used in try_grab_rope.
+      truncated: false
+  - id: A137
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_PUMP_ACCEL` | 900 px/s² | Tangential acceleration while left /
+      right is held. |"
+    result: passed
+    reason:
+      text: ROPE_PUMP_ACCEL = 900.0 used in step_rope.
+      truncated: false
+  - id: A138
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_DAMPING` | 0.35 /s | Angular-velocity decay rate. |"
+    result: passed
+    reason:
+      text: ROPE_DAMPING = 0.35 used in both step_rope and step_free_ropes.
+      truncated: false
+  - id: A139
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_MAX_ANGLE_DEG` | 75° | The swing never passes this angle from
+      vertical. |"
+    result: passed
+    reason:
+      text: ROPE_MAX_ANGLE_DEG = 75.0, converted with to_radians and clamped in
+        step_rope.
+      truncated: false
+  - id: A140
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_RELEASE_HOP_HEIGHT` | `WALL_JUMP_HEIGHT` 190 px | Upward boost
+      added on release. |"
+    result: passed
+    reason:
+      text: ROPE_RELEASE_HOP_HEIGHT = WALL_JUMP_HEIGHT (190).
+      truncated: false
+  - id: A141
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_REGRAB_LOCK` | 0.25 s | No grab of any rope for this long after a
+      release. |"
+    result: passed
+    reason:
+      text: ROPE_REGRAB_LOCK = 0.25, set on release and decremented each step.
+      truncated: false
+  - id: A142
+    source: specs/rope-swing/spec.md
+    text: "| `CLIMB_SPEED` | 140 px/s (existing) | Speed of the hold point along the
+      rope. |"
+    result: passed
+    reason:
+      text: CLIMB_SPEED (existing) drives the hold-length change in step_rope.
+      truncated: false
+  - id: A143
+    source: specs/rope-swing/spec.md
+    text: "| `GRAVITY` | 1400 px/s² (existing) | Pendulum gravity. |"
+    result: passed
+    reason:
+      text: GRAVITY (existing) is the pendulum gravity term.
+      truncated: false
+  - id: A144
+    source: specs/rope-swing/spec.md
+    text: Every rope in the level has, during play, an angle `θ` from vertical (0 =
+      hanging straight down, positive toward +x) and an angular velocity `ω`.
+      Both start at 0 when play starts or restarts, and are not level data. The
+      rope's line runs from its anchor `A` to `A + length · (sin θ, cos θ)`.
+    result: passed
+    reason:
+      text: RopeSwing{angle, ang_vel} per rope, default 0 on a new Simulation
+        (respawn/restart rebuild it); dir() = (sin, cos) so the line runs to A +
+        length*(sin,cos).
+      truncated: false
+  - id: A145
+    source: specs/rope-swing/spec.md
+    text: "Free rope (nobody on it): `ω̇ = −(GRAVITY / length) · sin θ −
+      ROPE_DAMPING · ω`, `θ̇ = ω`, integrated on the fixed step. When `|θ| <
+      0.5°` and `|ω| < 0.02 rad/s` the rope snaps to rest (`θ = ω = 0`)."
+    result: passed
+    reason:
+      text: step_free_ropes integrates omega' = -(G/len) sin theta - damping*omega and
+        theta += omega*dt, snapping to default below ROPE_REST_ANGLE (0.5 deg)
+        and ROPE_REST_ANG_VEL (0.02).
+      truncated: false
+  - id: A146
+    source: specs/rope-swing/spec.md
+    text: "A grab happens on a simulation step when all hold:"
+    result: passed
+    reason:
+      text: try_grab_rope checks every listed condition in one step.
+      truncated: false
+  - id: A147
+    source: specs/rope-swing/spec.md
+    text: the character's condition is normal (not hurt, not dead) and no regrab
+      lock is running;
+    result: passed
+    reason:
+      text: Control lock replaces input with default so axis_y = 0, and
+        regrab_lock_left > 0 returns early; death rebuilds the Simulation.
+      truncated: false
+  - id: A148
+    source: specs/rope-swing/spec.md
+    text: the character is not dashing;
+    result: passed
+    reason:
+      text: try_grab_rope returns early when is_dashing().
+      truncated: false
+  - id: A149
+    source: specs/rope-swing/spec.md
+    text: up or down is held (`axis_y ≠ 0`);
+    result: passed
+    reason:
+      text: try_grab_rope returns early when input.axis_y() == 0.0.
+      truncated: false
+  - id: A150
+    source: specs/rope-swing/spec.md
+    text: the distance from the character's centre to the rope's current line
+      segment is at most `ROPE_GRAB_HALF_WIDTH`, measured against the part of
+      the rope from `ROPE_MIN_HOLD` below the anchor to its end.
+    result: passed
+    reason:
+      text: Distance is measured to closest_on_segment(anchor + d*ROPE_MIN_HOLD,
+        anchor + d*length) and must be <= ROPE_GRAB_HALF_WIDTH.
+      truncated: false
+  - id: A151
+    source: specs/rope-swing/spec.md
+    text: "On grab: the hold length `L` is the projection of the character's centre
+      onto the rope's line, clamped to `[ROPE_MIN_HOLD, length]`; `θ` is the
+      rope's current angle; `ω = (v · t) / L` where `v` is the character's
+      velocity and `t = (cos θ, −sin θ)` the tangent, so momentum carries into
+      the swing. The character's state becomes `Rope`; the overlay label is
+      `rope`."
+    result: passed
+    reason:
+      text: hold = (pos - anchor).dot(d) clamped to [ROPE_MIN_HOLD, length]; angle
+        kept; ang_vel = vel.dot(tangent)/hold with tangent = (cos, -sin); state
+        = State::Rope, label "rope".
+      truncated: false
+  - id: A152
+    source: specs/rope-swing/spec.md
+    text: "While on the rope, each step:"
+    result: passed
+    reason:
+      text: step_rope runs every step while rope_hold is Some.
+      truncated: false
+  - id: A153
+    source: specs/rope-swing/spec.md
+    text: "pump: `a_t = axis_x · ROPE_PUMP_ACCEL`;"
+    result: passed
+    reason:
+      text: pump = input.axis_x() * ROPE_PUMP_ACCEL.
+      truncated: false
+  - id: A154
+    source: specs/rope-swing/spec.md
+    text: "`ω̇ = −(GRAVITY / L) · sin θ + a_t / L − ROPE_DAMPING · ω`; `θ += ω ·
+      dt`;"
+    result: passed
+    reason:
+      text: ang_vel += (-(G/hold) sin(angle) + pump/hold - damping*ang_vel)*dt; angle
+        += ang_vel*dt.
+      truncated: false
+  - id: A155
+    source: specs/rope-swing/spec.md
+    text: "angle cap: if `|θ|` would exceed `ROPE_MAX_ANGLE_DEG`, `θ` is clamped to
+      it and `ω` is set to 0 when it points outward;"
+    result: passed
+    reason:
+      text: Angle clamped to +-max_angle with ang_vel = min(0)/max(0) so only the
+        outward component is zeroed.
+      truncated: false
+  - id: A156
+    source: specs/rope-swing/spec.md
+    text: "climb: `L += −axis_y · CLIMB_SPEED · dt` (up shortens), clamped to
+      `[ROPE_MIN_HOLD, length]`;"
+    result: passed
+    reason:
+      text: hold += axis_y*CLIMB_SPEED*dt where axis_y = down - up (+1 = down), i.e.
+        up shortens, down lengthens — equivalent to the spec's -axis_y with
+        up-positive; clamped to [ROPE_MIN_HOLD, length] and tested.
+      truncated: false
+  - id: A157
+    source: specs/rope-swing/spec.md
+    text: the character's centre is placed at `A + L · (sin θ, cos θ)` and its
+      velocity set to `L · ω · t`; the character faces the direction of `ω` when
+      it is non-zero.
+    result: passed
+    reason:
+      text: pos = anchor + dir*hold, vel = tangent*(hold*ang_vel), facing =
+        ang_vel.signum() when |ang_vel| > 1e-3.
+      truncated: false
+  - id: A158
+    source: specs/rope-swing/spec.md
+    text: The rope's own `θ, ω` are the character's while held (one pendulum), so
+      the line is drawn from the anchor through the character to the rope's end.
+    result: passed
+    reason:
+      text: The held rope's RopeSwing is the same entry the character integrates;
+        main.rs draws each rope along play.player.rope_swing(i).dir() for its
+        full length, passing through the character.
+      truncated: false
+  - id: A159
+    source: specs/rope-swing/spec.md
+    text: "After placement the usual capsule-vs-polygon push-out runs. If the
+      character was pushed, the rope's angle is recomputed from the pushed
+      centre (`θ = atan2(dx, dy)` relative to the anchor, `L` unchanged) and `ω`
+      is set to 0: the swing stops against the wall."
+    result: passed
+    reason:
+      text: After placement up to 4 deepest_overlap push-outs run; if pushed, angle =
+        rel.x.atan2(rel.y), ang_vel = 0 (hold unchanged); tested by
+        a_wall_in_the_swing_path_stops_the_swing.
+      truncated: false
+  - id: A160
+    source: specs/rope-swing/spec.md
+    text: Landing on ground does not detach (the character can stand at the rope's
+      end while holding it); grounded contact does not change the state.
+    result: passed
+    reason:
+      text: step_rope never clears rope_hold on contact; the floor only pushes out and
+        stops the swing, state stays Rope.
+      truncated: false
+  - id: A161
+    source: specs/rope-swing/spec.md
+    text: "A non-normal condition (hurt, dead), or a restart / respawn, drops the
+      rope: state returns to airborne with the current velocity, and the rope
+      keeps `θ, ω` and swings on freely."
+    result: passed
+    reason:
+      text: lock_control and apply_knockback call drop_rope (state Airborne, velocity
+        kept, swing retained); respawn/restart rebuild the Simulation.
+      truncated: false
+  - id: A162
+    source: specs/rope-swing/spec.md
+    text: Dash and wall jump cannot start while on the rope; attack and shield
+      follow `play-combat` unchanged.
+    result: passed
+    reason:
+      text: step returns from step_rope before try_start_dash and step_jump;
+        attack/shield are combat-side and unchanged (dash test on rope passes).
+      truncated: false
+  - id: A163
+    source: specs/rope-swing/spec.md
+    text: "Pressing jump while on the rope releases it: state becomes airborne,
+      velocity = `L · ω · t + (0, −jump_speed(ROPE_RELEASE_HOP_HEIGHT))` (the
+      same `jump_speed` the simulation uses for jumps), the air dash is
+      restored, and `ROPE_REGRAB_LOCK` starts. The rope keeps `ω` and swings on,
+      damped."
+    result: passed
+    reason:
+      text: Release path sets vel = tangent*(hold*ang_vel) + (0,
+        -jump_speed(ROPE_RELEASE_HOP_HEIGHT)), air_dashes_used = 0,
+        regrab_lock_left = ROPE_REGRAB_LOCK, leaves the swing's ang_vel intact.
+      truncated: false
+  - id: A164
+    source: specs/rope-swing/spec.md
+    text: While playing, each rope is drawn from its anchor along its current angle
+      to its end, in the same colour as on the canvas; a held rope is drawn to
+      the character and on to the rope's end. When not playing, ropes hang
+      straight down.
+    result: passed
+    reason:
+      text: main.rs entity loop paints ropes with RopeEntity::paint along swing.dir()
+        in ROPE_COLOR while playing and via entity.draw (straight down)
+        otherwise.
+      truncated: false
+  - id: A165
+    source: specs/rope-swing/spec.md
+    text: A1 — Holding up or down within 30 px of a rope's line, at least 40 px
+      below the anchor, attaches the character at that height; the overlay reads
+      `rope`.
+    result: passed
+    reason:
+      text: try_grab_rope requires axis_y != 0, no regrab lock, not dashing, distance
+        <= ROPE_GRAB_HALF_WIDTH to the segment from ROPE_MIN_HOLD below the
+        anchor to the end; state becomes State::Rope labelled "rope"; test
+        holding_up_beside_a_rope_grabs_it_at_that_height asserts the hold
+        height, label and zero-velocity snap (vel = t*(hold*omega) with omega
+        from v=0).
+      truncated: false
+  - id: A166
+    source: specs/rope-swing/spec.md
+    text: A2 — From rest at 30° with no input the swing's period is within 10% of
+      `2π·sqrt(L / GRAVITY)`, and it settles to `θ = 0`.
+    result: passed
+    reason:
+      text: step_rope integrates omega' = -(G/L) sin(theta) - damping*omega; test
+        a_rope_swings_with_the_pendulum_period_and_settles measures the
+        zero-crossing period from 30 deg within 10% of 2*pi*sqrt(L/G) and
+        asserts |theta| < 0.01 after 30 s.
+      truncated: false
+  - id: A167
+    source: specs/rope-swing/spec.md
+    text: A3 — Holding right from a hanging rest builds a swing whose angle never
+      exceeds 75°.
+    result: passed
+    reason:
+      text: Pump a_t = axis_x*ROPE_PUMP_ACCEL feeds omega' and the angle is clamped to
+        +-ROPE_MAX_ANGLE_DEG with omega zeroed outward; test
+        pumping_builds_a_swing_capped_at_the_max_angle holds right for 20 s and
+        asserts angle <= cap and reaches it.
+      truncated: false
+  - id: A168
+    source: specs/rope-swing/spec.md
+    text: A4 — Up / down move `L` at 140 px/s, bounded by 40 px and the rope's
+      length.
+    result: passed
+    reason:
+      text: hold += axis_y*CLIMB_SPEED*dt (axis_y = down - up, so up shortens) clamped
+        to [ROPE_MIN_HOLD, length]; test
+        up_and_down_move_the_hold_along_the_rope_within_bounds checks 140 px/s
+        and both bounds.
+      truncated: false
+  - id: A169
+    source: specs/rope-swing/spec.md
+    text: A5 — Jump releases with `L · ω · t` plus a 190 px hop; no grab is possible
+      for 0.25 s; the rope goes on swinging.
+    result: passed
+    reason:
+      text: On jump_buffer the release sets vel = t*(L*omega) + (0,
+        -jump_speed(ROPE_RELEASE_HOP_HEIGHT)), air_dashes_used = 0,
+        regrab_lock_left = 0.25, state Airborne; test
+        jump_releases_with_the_swing_velocity_plus_a_hop_and_locks_regrab
+        verifies velocity, the hop, the rope swinging on and no grab during the
+        lock; landing then goes through the normal integrate path.
+      truncated: false
+  - id: A170
+    source: specs/rope-swing/spec.md
+    text: A6 — Entering the rope at run speed gives `ω = (v · t) / L`.
+    result: passed
+    reason:
+      text: On grab omega = vel.dot(tangent)/hold; test
+        running_into_a_rope_carries_momentum_into_the_swing asserts omega ~
+        PLAYER_RUN_SPEED/L.
+      truncated: false
+  - id: A171
+    source: specs/rope-swing/spec.md
+    text: A7 — A polygon in the swing path stops the swing; hurt or death drops the
+      rope; dash and wall jump do not start while on it.
+    result: passed
+    reason:
+      text: step_rope runs deepest_overlap push-out, then re-aims theta = atan2(dx,dy)
+        and zeroes omega (test a_wall_in_the_swing_path_stops_the_swing);
+        lock_control/apply_knockback call drop_rope and death restarts via
+        Simulation::new; step returns before try_start_dash/step_jump while
+        rope_hold is set (test
+        being_hurt_drops_the_rope_and_dash_cannot_start_on_it).
+      truncated: false
+  - id: A172
+    source: specs/rope-swing/spec.md
+    text: A8 — Restart and stop reset every rope to hanging straight; play never
+      changes rope entities or `has_unsaved_changes()`.
+    result: passed
+    reason:
+      text: Rope swings live in Simulation::rope_swings, not in entities; the
+        Rope-tool arm and save_state sit in the non-play branch of the click
+        handler; respawn/restart rebuild the Simulation so every rope is reset
+        (test respawn_resets_every_rope_to_hanging_still); stop_play drops the
+        session.
+      truncated: false
+  - id: A173
+    source: specs/rope-swing/spec.md
+    text: A9 — `game_config.rs` declares the constants above with these values.
+    result: passed
+    reason:
+      text: game_config.rs declares ROPE_BITMAP "rope_tool", ROPE_THICKNESS 6,
+        ROPE_MIN_LENGTH 60, ROPE_MIN_HOLD 40, ROPE_GRAB_HALF_WIDTH 30,
+        ROPE_PUMP_ACCEL 900, ROPE_DAMPING 0.35, ROPE_MAX_ANGLE_DEG 75,
+        ROPE_RELEASE_HOP_HEIGHT = WALL_JUMP_HEIGHT, ROPE_REGRAB_LOCK 0.25 with a
+        comment naming it the game's model.
+      truncated: false
+  - id: A174
+    source: specs/rope-tool/spec.md
+    text: "Complete target behaviour of ropes as editor entities: the tool that
+      places them, how they are drawn and edited, and how they are saved."
+    result: passed
+    reason:
+      text: rope-tool spec is fully implemented across entities.rs, main.rs,
+        toolboxes.json and the docs; details verified per item below.
+      truncated: false
+  - id: A175
+    source: specs/rope-tool/spec.md
+    text: '`src/toolboxes.json` gains a tool `rope_tool` of kind `rope` ("Tool to
+      hang a rope on the map.", icon `assets/rope.png`, bundled as
+      `src/assets/rope.png`) and the main toolbox gains a fifth row holding it.
+      Rows may have fewer cells than the widest row.'
+    result: passed
+    reason:
+      text: toolboxes.json adds rope_tool (type rope, description "Tool to hang a rope
+        on the map.", icon assets/rope.png) and a fifth main-toolbox row
+        ["rope_tool"]; src/assets/rope.png is a valid 32x32 RGBA PNG; toolbox
+        width uses the max row length so a short row is fine.
+      truncated: false
+  - id: A176
+    source: specs/rope-tool/spec.md
+    text: Selecting it puts the editor in the Rope tool mode. Switching to any other
+      tool cancels a rope in progress.
+    result: passed
+    reason:
+      text: Tool kind "rope" maps to Tool::Rope in the tool-selection match, and tool
+        selection sets drawing_rope = None.
+      truncated: false
+  - id: A177
+    source: specs/rope-tool/spec.md
+    text: First left click on the canvas sets the rope's anchor at the click's world
+      position.
+    result: passed
+    reason:
+      text: RopePlacement::SetAnchor(world_pos) stores the first click's world
+        position in drawing_rope.
+      truncated: false
+  - id: A178
+    source: specs/rope-tool/spec.md
+    text: While the anchor is set and the bottom end is not, a preview line is drawn
+      from the anchor straight down to the cursor's height, and the anchor is
+      marked.
+    result: passed
+    reason:
+      text: With Tool::Rope and drawing_rope set, main.rs paints a translucent
+        vertical line from the anchor to the cursor's y (never shorter than
+        ROPE_MIN_LENGTH) plus an anchor disc.
+      truncated: false
+  - id: A179
+    source: specs/rope-tool/spec.md
+    text: Second left click at a world `y` at least `ROPE_MIN_LENGTH` (60 px) below
+      the anchor finalises a rope with `length = click.y − anchor.y`; the
+      click's `x` is ignored. A second click above the anchor or closer than the
+      minimum does nothing (the rope stays in progress).
+    result: passed
+    reason:
+      text: RopeEntity::place finishes only when click.y - anchor.y >= ROPE_MIN_LENGTH
+        with length from y alone, otherwise Ignore keeps drawing_rope;
+        unit-tested including the exact-minimum boundary.
+      truncated: false
+  - id: A180
+    source: specs/rope-tool/spec.md
+    text: "`Escape` cancels the rope in progress (after the help window, before
+      polygon handling, in the same priority list). Switching tools or entering
+      play mode cancels it too."
+    result: passed
+    reason:
+      text: "escape_action: CloseHelp > CancelRope > CancelPolygon > ExitEditMode
+        (test escape_cancels_a_rope_in_progress_after_help_and_polygon_drawing);
+        tool selection and start_play both set drawing_rope = None."
+      truncated: false
+  - id: A181
+    source: specs/rope-tool/spec.md
+    text: Placement calls `save_state()` once per finished rope, so undo removes the
+      rope.
+    result: passed
+    reason:
+      text: RopePlacement::Finish arm calls self.save_state() once before pushing the
+        new Entity::Rope.
+      truncated: false
+  - id: A182
+    source: specs/rope-tool/spec.md
+    text: Clicks that land on the toolbox, a floating window, the menu bar or the
+      minimap are consumed by those, as for every other tool.
+    result: passed
+    reason:
+      text: The Rope arm sits in the same click handler behind the toolbox_click /
+        pointer_over_ui / play checks as every other tool; minimap handling is
+        unchanged.
+      truncated: false
+  - id: A183
+    source: specs/rope-tool/spec.md
+    text: A rope is drawn as a `ROPE_THICKNESS` 6 px line in a rope colour from its
+      anchor to `anchor + (0, length)`, with a small disc at the anchor.
+      Selected ropes get the same green outline treatment other entities use
+      (the line drawn thicker in green).
+    result: passed
+    reason:
+      text: RopeEntity::paint draws a ROPE_THICKNESS line in ROPE_COLOR to
+        anchor+(0,length) with a filled/outlined anchor disc; selected ropes are
+        drawn in Color32::GREEN.
+      truncated: false
+  - id: A184
+    source: specs/rope-tool/spec.md
+    text: "Hit-test: a point is on the rope when its distance to the segment is at
+      most 8 px. The Select tool selects and drags the whole rope (the anchor
+      moves by the drag delta; length is unchanged). The Delete tool removes it.
+      Double-click does nothing special on a rope."
+    result: passed
+    reason:
+      text: contains_point uses an 8 px segment distance (tested at 7/10 px); Select
+        arm sets dragging_entity and the drag loop calls Entity::translate
+        (anchor only); Erase removes via the generic path; double-click edit
+        mode is gated on Entity::Polygon.
+      truncated: false
+  - id: A185
+    source: specs/rope-tool/spec.md
+    text: Length cannot be edited after placement.
+    result: passed
+    reason:
+      text: No length handle or edit path exists; translate keeps length (asserted in
+        the hit-test unit test).
+      truncated: false
+  - id: A186
+    source: specs/rope-tool/spec.md
+    text: '`Entity::Rope { anchor, length }` serialises to a bitmap entry:
+      `{"type":"bitmap","position":[anchor.x,
+      anchor.y],"bitmap_name":"rope_tool","size":[ROPE_THICKNESS, length]}`.'
+    result: passed
+    reason:
+      text: to_level_entity Rope arm emits exactly {type bitmap, position [anchor.x,
+        anchor.y], bitmap_name ROPE_BITMAP, size [ROPE_THICKNESS, length]}
+        (unit-tested).
+      truncated: false
+  - id: A187
+    source: specs/rope-tool/spec.md
+    text: Loading a bitmap entry whose `bitmap_name` is `rope_tool` yields a rope
+      with `anchor = position` and `length = max(size[1], ROPE_MIN_LENGTH)`. Any
+      other bitmap entry loads as before. The schema (`LevelData`,
+      `LevelEntity`) is unchanged.
+    result: passed
+    reason:
+      text: from_level_entity guard on bitmap_name == ROPE_BITMAP builds
+        Entity::new_rope(position, size[1]) whose length is max(size[1],
+        ROPE_MIN_LENGTH) (test a_too_short_rope_is_stretched_to_the_minimum);
+        other bitmaps unchanged; level_data.rs not in the diff.
+      truncated: false
+  - id: A188
+    source: specs/rope-tool/spec.md
+    text: "`LEVEL_FORMAT.md` and `BEVY_INTEGRATION.md` document the `rope_tool`
+      entry; `README.md` lists ropes under features and the rope clicks under
+      usage."
+    result: passed
+    reason:
+      text: LEVEL_FORMAT.md has a "Rope (a bitmap entry)" section, BEVY_INTEGRATION.md
+        a "Ropes" section, README lists Ropes under features and the Rope-tool
+        click row under usage.
+      truncated: false
+  - id: A189
+    source: specs/rope-tool/spec.md
+    text: A1 — Two clicks (anchor, then a point ≥ 60 px lower) create one rope with
+      the anchor at the first click and the length from the second click's
+      height; a click above or too close does nothing; Escape or a tool switch
+      cancels; a preview follows the cursor in between.
+    result: passed
+    reason:
+      text: RopeEntity::place (entities.rs) sets the anchor on the first click,
+        finishes with length=click.y-anchor.y (x ignored) only when >=
+        ROPE_MIN_LENGTH, else Ignore; unit test
+        placement_takes_the_anchor_then_a_lower_click_and_ignores_the_rest
+        covers (400,100)->(430,400)=300, above and too-close; main.rs clears
+        drawing_rope on tool switch and EscapeAction::CancelRope, and paints a
+        ghost line from anchor to the cursor.
+      truncated: false
+  - id: A190
+    source: specs/rope-tool/spec.md
+    text: A2 — The rope is drawn as a vertical line with an anchor knob; Select
+      picks it within 8 px of the line and drags it whole; Delete removes it;
+      undo and redo cover place, move and delete.
+    result: passed
+    reason:
+      text: RopeEntity::paint draws a 6 px line plus an anchor disc; contains_point
+        uses distance_to_segment <= ROPE_HIT_DISTANCE 8 (tested at 7 px in / 10
+        px out); translate moves the anchor and keeps length; Select/Erase arms
+        in main.rs use the generic Entity::contains_point/translate/remove paths
+        and save_state, so undo/redo cover place, move and delete.
+      truncated: false
+  - id: A191
+    source: specs/rope-tool/spec.md
+    text: A3 — Save writes the `rope_tool` bitmap entry with `size = [6, length]`;
+      load restores it; files without ropes load unchanged; the schema is
+      untouched.
+    result: passed
+    reason:
+      text: to_level_entity emits LevelEntity::Bitmap{position:[anchor],
+        bitmap_name:"rope_tool", size:[6,length]} and from_level_entity branches
+        on ROPE_BITMAP; test
+        a_rope_saves_as_a_rope_tool_bitmap_entry_and_loads_back round-trips
+        through serde JSON; other_bitmaps_still_load_as_bitmaps and the
+        untouched level_data.rs cover files without ropes and the schema.
+      truncated: false
+  - id: A192
+    source: specs/rope-tool/spec.md
+    text: A4 — The toolbox shows the rope tool in its own row and the help lists it
+      as a `Rope` tool with the hint `click the anchor, then click the bottom
+      end`.
+    result: passed
+    reason:
+      text: kind_hint maps "rope" to "click the anchor, then click the bottom end";
+        real_toolboxes_json_yields_every_tool_exactly_once loads
+        src/toolboxes.json (now containing rope_tool) and checks each tool once
+        with description and the implemented flag; the main toolbox has a fifth
+        row ["rope_tool"].
+      truncated: false
+builder_handoff:
+  candidate_id: 5a06c00d-8a4b-4e0b-a8d6-fe3301f8bc31
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:6e17ce40-8ec1-4071-b5ed-86af6a0cba06
+  iteration: 1
+  summary:
+    text: "Editor-side ropes. game_config.rs: ROPE_* constants (bitmap name,
+      thickness 6, min length 60, min hold 40, grab half width 30, pump 900,
+      damping 0.35, max angle 75, release hop = WALL_JUMP_HEIGHT, regrab lock
+      0.25). sim.rs: World gains ropes (anchor+length); Simulation keeps one
+      RopeSwing (angle, ang_vel) per rope plus rope_hold and a regrab lock; free
+      ropes integrate a damped pendulum and snap to rest; try_grab_rope runs
+      after the normal step when up/down is held, the character is within 30 px
+      of the rope segment from min-hold to end and no lock/dash, attaching at
+      the projected height with ang_vel = v·t/L; step_rope handles jump release
+      (tangential velocity + hop, bounce flag, air dash restored, regrab lock,
+      rope keeps ω), pump/gravity/damping, ±75° cap, up/down climb along [min
+      hold, length], placement + capsule push-out that re-aims the rope and
+      zeroes ω; lock_control/apply_knockback drop the rope; State::Rope labelled
+      'rope'. entities.rs: RopeEntity (anchor, length ≥ 60) with paint helper, 8
+      px segment hit-test, whole-rope translate, RopePlacement two-click rule,
+      to/from LevelEntity as a 'rope_tool' bitmap entry with size [6,length].
+      main.rs: Tool::Rope from tool kind 'rope'; drawing_rope anchor state
+      cleared on tool switch, new level, play start; Rope-tool click uses
+      RopeEntity::place; Escape cancels a rope (help > rope > polygon > edit
+      mode); translucent preview from anchor to cursor; ropes drawn straight
+      while editing and along the simulation's swing while playing;
+      collision_world passes ropes; entity_bounds covers ropes. help.rs: 'rope'
+      kind hint, Rope-tool mouse row, updated Escape/left-right/up-down/jump
+      rows, escape_action gains drawing_rope. toolboxes.json: rope_tool in a
+      fifth row with a generated src/assets/rope.png. README, LEVEL_FORMAT.md,
+      BEVY_INTEGRATION.md updated."
+    truncated: false
+  addressed_acceptance_ids:
+    - A1
+    - A2
+    - A3
+    - A4
+    - A5
+    - A6
+    - A7
+    - A8
+    - A9
+    - A10
+    - A11
+    - A12
+    - A13
+    - A14
+    - A15
+  checks:
+    - name:
+        text: cargo test
+        truncated: false
+      result: passed
+      note:
+        text: "185 unit tests + 1 integration test pass: 10 new rope simulation tests, 6
+          rope entity/placement tests, help escape/mouse tests"
+        truncated: false
+    - name:
+        text: cargo build
+        truncated: false
+      result: passed
+      note:
+        text: no new warnings in touched code (pre-existing float-literal and dead-code
+          warnings elsewhere unchanged)
+        truncated: false
+    - name:
+        text: manual play session
+        truncated: false
+      result: not-run
+      note:
+        text: GUI interaction not available in this session
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: The rope-swing spec's climb formula is written as L +=
+        -axis_y*CLIMB_SPEED*dt with up positive; the simulation's axis_y is +1 =
+        down, so the code reads L += axis_y*CLIMB_SPEED*dt. Same behaviour (up
+        shortens, down lengthens).
+      truncated: false
+    - text: While on a rope the character is never 'grounded'; standing at a rope's
+        end on the floor keeps the rope held with the swing stopped by the
+        push-out, as the spec allows.
+      truncated: false
+  known_limits_truncated: false
+  submitted_at: 2026-09-14T11:14:04.973Z
+blockers: []
+verification:
+  candidate_id: 5a06c00d-8a4b-4e0b-a8d6-fe3301f8bc31
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:7256f2e6-daae-47f9-805b-b8c58a44385b
+  iteration: 1
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: pass
+  checks:
+    - id: cargo-test
+      name:
+        text: cargo test
+        truncated: false
+      argv_display:
+        - text: test
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 211
+    - id: cargo-build
+      name:
+        text: cargo build
+        truncated: false
+      argv_display:
+        - text: build
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 165
+  summary:
+    text: All 192 acceptance items pass. The rope tool, RopeEntity, level-file
+      mapping (rope_tool bitmap with size [6,length]), help rows, toolbox row,
+      icon and docs are implemented as specified, and sim.rs implements the
+      grab, damped/pumped pendulum, 75-degree cap, climb, collision stop,
+      release with hop and regrab lock exactly per the rope-swing equations (the
+      climb sign matches once the sim's down-positive axis_y is accounted for).
+      cargo test (185 + 1 tests) and cargo build were re-run and pass;
+      pre-existing behaviour is untouched by the diff.
+    truncated: false
+  risks:
+    - text: The rope preview clamps its bottom end to at least ROPE_MIN_LENGTH below
+        the anchor rather than following a cursor that is above/too close; the
+        spec only says it follows the cursor's height, so this is a benign UI
+        choice.
+      truncated: false
+    - text: A dash press buffered (0.1 s) while on the rope can fire immediately after
+        a jump release; not a spec violation but slightly surprising.
+      truncated: false
+    - text: Interactive behaviour (preview, drag, minimap/toolbox click consumption)
+        was judged from code paths only; no GUI session was run.
+      truncated: false
+  risks_truncated: false
+  completed_at: 2026-09-14T11:18:25.933Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: All 192 acceptance items pass. The rope tool, RopeEntity, level-file
+        mapping (rope_tool bitmap with size [6,length]), help rows, toolbox row,
+        icon and docs are implemented as specified, and sim.rs implements the
+        grab, damped/pumped pendulum, 75-degree cap, climb, collision stop,
+        release with hop and regrab lock exactly per the rope-swing equations
+        (the climb sign matches once the sim's down-positive axis_y is accounted
+        for). cargo test (185 + 1 tests) and cargo build were re-run and pass;
+        pre-existing behaviour is untouched by the diff.
+      truncated: false
+    completed_at: 2026-09-14T11:18:25.933Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: true
+created_at: 2026-09-14T07:47:54.477Z

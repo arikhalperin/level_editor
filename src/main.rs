@@ -37,7 +37,7 @@ mod combat;
 use combat::{BitmapSpawn, PlayInput, PlaySession};
 
 mod entities;
-use entities::{Entity, DrawableEntity};
+use entities::{Entity, DrawableEntity, RopeEntity, RopePlacement, ROPE_COLOR};
 
 mod debug_export;
 use debug_export::{write_minimap_debug_json, MinimapDebugSnapshot};
@@ -72,6 +72,7 @@ enum Tool {
     Erase,
     Bitmap(String),
     DrawPolygon,
+    Rope,
 }
 
 struct EditorState {
@@ -130,6 +131,8 @@ struct EditorState {
     /// True from a left-button press on the minimap until release: every frame in between
     /// re-centres the view on the pointer.
     minimap_drag: bool,
+    /// Anchor of the rope being placed (first click done, second pending).
+    drawing_rope: Option<Pos2>,
     /// Explicit level extent, when one has been set. Saved to the level JSON.
     level_size: Option<Vec2>,
     /// Open state and in-progress text of the Level Size dialog.
@@ -196,6 +199,7 @@ impl Default for EditorState {
             ui_consumed_click: false,
             minimap_layout: None,
             minimap_drag: false,
+            drawing_rope: None,
             level_size: None,
             size_dialog: None,
             play: None,
@@ -306,6 +310,7 @@ impl EditorState {
         self.dragging_polygon_point = false;
         self.minimap_drag = false;
         self.drawing_polygon = None;
+        self.drawing_rope = None;
         self.undo_stack = blank.undo_stack;
         self.redo_stack = blank.redo_stack;
         self.scroll = blank.scroll;
@@ -716,6 +721,10 @@ impl EditorState {
                         grow(p.x, p.y);
                     }
                 }
+                Entity::Rope(rope) => {
+                    let end = rope.end();
+                    grow(end.x + game_config::ROPE_THICKNESS, end.y);
+                }
             }
         }
         max
@@ -740,7 +749,13 @@ impl EditorState {
                 CollisionPoly::new(&poly.points, climbable)
             })
             .collect();
-        World { polys }
+        let ropes = self
+            .entities
+            .iter()
+            .filter_map(|e| e.as_rope())
+            .map(|r| sim::Rope { anchor: r.anchor, length: r.length })
+            .collect();
+        World { polys, ropes }
     }
 
     /// The level's bitmap entities in the plain form the combat layer maps to orcs,
@@ -772,6 +787,7 @@ impl EditorState {
         self.dragging_polygon_point = false;
         self.dragging_toolbox = false;
         self.drag_start = None;
+        self.drawing_rope = None;
         self.play = Some(PlaySession::new(spawn, &self.bitmap_spawns()));
         trace!("play_started spawn={:?}", spawn);
     }
@@ -1436,6 +1452,7 @@ impl eframe::App for EditorState {
                         self.help_open,
                         editing && self.drawing_polygon.is_some(),
                         editing && self.editing_polygon_entity.is_some(),
+                        editing && self.drawing_rope.is_some(),
                     )
                 };
                 match action {
@@ -1446,6 +1463,10 @@ impl eframe::App for EditorState {
                     EscapeAction::CancelPolygon => {
                         self.drawing_polygon = None;
                         trace!("polygon_cancelled");
+                    }
+                    EscapeAction::CancelRope => {
+                        self.drawing_rope = None;
+                        trace!("rope_cancelled");
                     }
                     EscapeAction::ExitEditMode => {
                         self.editing_polygon_entity = None;
@@ -1549,6 +1570,8 @@ impl eframe::App for EditorState {
         if let Some(selected_name) = tool_selected {
             trace!("tool_selected name={}", selected_name);
             self.current_tool_name = Some(selected_name.clone());
+            // Switching tools abandons a rope whose bottom end was never clicked.
+            self.drawing_rope = None;
             
             // Determine tool type based on JSON configuration
             let tool_type = self.get_tool_type(&selected_name);
@@ -1564,6 +1587,7 @@ impl eframe::App for EditorState {
                     }
                 }
                 Some("polygon") => Tool::DrawPolygon,
+                Some("rope") => Tool::Rope,
                 Some("bitmap") | _ => {
                     // Preload bitmap texture for preview
                     self.load_bitmap_texture(ctx, &selected_name);
@@ -1661,6 +1685,15 @@ impl eframe::App for EditorState {
                 }
             }
 
+            // Rope being placed: a translucent preview from the anchor down to the cursor.
+            if let (Tool::Rope, Some(anchor), Some(mouse)) = (&self.tool, self.drawing_rope, pointer_pos) {
+                let a = anchor - self.scroll_offset;
+                let end_y = mouse.y.max(a.y + game_config::ROPE_MIN_LENGTH);
+                let ghost = Color32::from_rgba_unmultiplied(ROPE_COLOR.r(), ROPE_COLOR.g(), ROPE_COLOR.b(), 128);
+                painter.line_segment([a, egui::pos2(a.x, end_y)], (game_config::ROPE_THICKNESS, ghost));
+                painter.circle_filled(a, game_config::ROPE_THICKNESS, ROPE_COLOR);
+            }
+
             // Collect bitmap names to preload textures
             let bitmap_names: Vec<String> = self.entities.iter()
                 .filter_map(|e| e.as_bitmap().map(|b| b.bitmap_name.clone()))
@@ -1672,9 +1705,24 @@ impl eframe::App for EditorState {
             }
 
             // Draw all entities
+            let mut rope_idx = 0;
             for (idx, entity) in self.entities.iter().enumerate() {
                 let is_selected = self.selected_entity == Some(idx);
                 let is_editing = self.editing_polygon_entity == Some(idx);
+
+                // Ropes swing while playing: draw them along their current angle. The
+                // simulation's rope list is built from the entities in this same order.
+                if let Entity::Rope(rope) = entity {
+                    match &self.play {
+                        Some(play) => {
+                            let swing = play.player.rope_swing(rope_idx);
+                            RopeEntity::paint(painter, rope.anchor - self.scroll_offset, swing.dir(), rope.length, false);
+                        }
+                        None => entity.draw(painter, self.scroll_offset, is_selected),
+                    }
+                    rope_idx += 1;
+                    continue;
+                }
                 
                 // Special handling for bitmap entities (need textures)
                 if let Some(bitmap_entity) = entity.as_bitmap() {
@@ -1804,6 +1852,25 @@ impl eframe::App for EditorState {
                                     self.last_click_time = Some(current_time);
                                     self.last_click_pos = Some(world_pos);
                                 }
+                            }
+                            Tool::Rope => {
+                                match RopeEntity::place(self.drawing_rope, world_pos) {
+                                    RopePlacement::SetAnchor(anchor) => {
+                                        self.drawing_rope = Some(anchor);
+                                        trace!("rope_anchor_set {:?}", anchor);
+                                    }
+                                    RopePlacement::Finish { anchor, length } => {
+                                        self.save_state();
+                                        self.entities.push(Entity::new_rope(anchor, length));
+                                        self.drawing_rope = None;
+                                        trace!("rope_placed anchor={:?} length={} total={}", anchor, length, self.entities.len());
+                                    }
+                                    RopePlacement::Ignore => {
+                                        trace!("rope_click_ignored {:?}", world_pos);
+                                    }
+                                }
+                                self.last_click_time = Some(current_time);
+                                self.last_click_pos = Some(world_pos);
                             }
                             Tool::Bitmap(_) => {
                                 let bitmap_name = match &self.tool {

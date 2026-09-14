@@ -62,15 +62,36 @@
       "type": "polygon",
       "icon": "assets/wall.png",
       "color": "#FF0000"
+    },
+    {
+      "name": "rope_tool",
+      "description": "Tool to hang a rope on the map.",
+      "type": "rope",
+      "icon": "assets/rope.png"
     }
   ],
   "main_toolbox": {
     "name": "Main Toolbox",
     "tools": [
-      ["select_tool","coin_tool"],
-      ["delete_tool","blocker_tool"],
-      ["polygon_tool","orc_tool"],
-      ["death_trap_tool","wall_tool"]
+      [
+        "select_tool",
+        "coin_tool"
+      ],
+      [
+        "delete_tool",
+        "blocker_tool"
+      ],
+      [
+        "polygon_tool",
+        "orc_tool"
+      ],
+      [
+        "death_trap_tool",
+        "wall_tool"
+      ],
+      [
+        "rope_tool"
+      ]
     ]
   }
 }

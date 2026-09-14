@@ -166,3 +166,29 @@ pub const DEATH_PIT_BITMAP: &str = "death_trap_tool";
 /// The polygon type the game treats as a climbable wall
 /// (`world_objects::spawn_polygon_collider`: `is_wall = polygon_type == "wall_tool"`).
 pub const CLIMBABLE_POLYGON_TYPE: &str = "wall_tool";
+
+// ── Rope ────────────────────────────────────────────────────────────────────────
+// Defined here first: the editor's `sim` is the reference implementation of the rope
+// swing and the game reproduces these numbers (see the `rope-swing` spec).
+
+/// Level `bitmap_name` the importers turn into a rope. The entry's `position` is the
+/// anchor and its `size` is `[ROPE_THICKNESS, length]`.
+pub const ROPE_BITMAP: &str = "rope_tool";
+/// Saved `size.x` and drawn line width, px.
+pub const ROPE_THICKNESS: f32 = 6.0;
+/// Shortest rope the tool creates or the loader accepts, px.
+pub const ROPE_MIN_LENGTH: f32 = 60.0;
+/// Closest the hold point gets to the anchor, px.
+pub const ROPE_MIN_HOLD: f32 = 40.0;
+/// Max distance from the character's centre to the rope line for a grab, px.
+pub const ROPE_GRAB_HALF_WIDTH: f32 = 30.0;
+/// Tangential acceleration while left / right is held, px/s².
+pub const ROPE_PUMP_ACCEL: f32 = 900.0;
+/// Angular-velocity decay rate, 1/s.
+pub const ROPE_DAMPING: f32 = 0.35;
+/// The swing never passes this angle from vertical, degrees.
+pub const ROPE_MAX_ANGLE_DEG: f32 = 75.0;
+/// Upward boost added on release, px (a wall jump's height).
+pub const ROPE_RELEASE_HOP_HEIGHT: f32 = WALL_JUMP_HEIGHT;
+/// No grab of any rope for this long after a release, seconds.
+pub const ROPE_REGRAB_LOCK: f32 = 0.25;
