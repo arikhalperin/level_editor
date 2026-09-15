@@ -1,0 +1,900 @@
+schema: comet.native.v4
+name: flexible-rope
+language: en
+phase: archive
+status: done
+state_version: 9
+brief: brief.md
+spec_changes:
+  - capability: rope-swing
+    operation: modify
+    source: specs/rope-swing/spec.md
+workspace:
+  isolation: current
+  change_branch: main
+  target_branch: main
+  finish: null
+loop:
+  stage: done
+  goal_cycle: 2
+  iteration: 1
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: null
+acceptance:
+  - id: A1
+    source: brief.md
+    text: A1 — A 300 px rope is a chain of `ROPE_SEGMENT_LEN` 16 px links (19
+      segments); after any number of steps every segment's length is within 2%
+      of its rest length and the first link is exactly at the anchor.
+    result: passed
+    reason:
+      text: Test a_rope_is_a_chain_of_sixteen_px_links_pinned_at_the_anchor asserts 19
+        segments for the 300 px rope, anchor pin and total length; my own probes
+        measured worst segment error 0.11% free, 0.02% on the held tail, and
+        0.00 px on the taut part (the one link-to-link pair straddling the hand
+        splits exactly into the two hand sub-segments the spec's inserted hand
+        link defines, summing to rest length within 0.018%).
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: "A2 — A free rope at rest hangs straight down. Displaced so its tail is
+      120 px to the side and released, it swings and ripples, then settles:
+      within 6 s every link's speed is below `ROPE_SETTLE_SPEED` 2 px/s and the
+      chain hangs straight again (all links within 1 px of the anchor's x)."
+    result: passed
+    reason:
+      text: a_displaced_free_rope_ripples_and_settles_straight passes (tail swings
+        across, anchor fixed, segments intact); my probe measured resting
+        reached at t=2.64 s, final max |x-anchor.x| = 0.0000 px and max link
+        speed 0 px/s.
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: A3 — While held at hold length L, the links from the anchor to the hand
+      lie on the straight line `anchor + s·dir(θ)` (within 0.5 px) and the hand
+      link is at the hold position; the links below the hand hang from it.
+    result: passed
+    reason:
+      text: RopeChain::step_held pins every link with arc <= hold at anchor+dir*s; my
+        probe over a 3 s swing measured max taut deviation 0.00000 px, hand
+        exactly at anchor+dir(theta)*L, and the first free link held (s-L) from
+        the hand within 0.0015 px.
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: "A4 — During a swing the tail lags: with the hand moving toward +x, the
+      end link's x is behind the hand's x relative to the anchor's line
+      (measured at the bottom of the swing)."
+    result: passed
+    reason:
+      text: the_tail_lags_behind_the_swing passes, and my independent probe from a
+        real grab plus pump (no hand-set shape) measured tail.x - hand.x =
+        -168.2 px at the fastest +x moment, so the lag is emergent, not an
+        artefact of the test's starting shape.
+      truncated: false
+  - id: A5
+    source: brief.md
+    text: "A5 — Grab, pump, climb, release and regrab behave exactly as before: the
+      archived rope-swing tests (grab height, period, cap, climb bounds, release
+      velocity plus hop, regrab lock, momentum carry-in, wall stop, hurt drop,
+      respawn reset) still pass unchanged."
+    result: passed
+    reason:
+      text: All archived rope tests (grab height, period, 75 deg cap, climb bounds,
+        release velocity + hop, regrab lock, momentum carry-in, wall stop, hurt
+        drop, respawn reset) pass unchanged; the only edits are stilling the
+        chain alongside the already-present pendulum stilling before the regrab,
+        and asserting chain motion instead of a now-unused free-pendulum ang_vel
+        - no behavioural assertion was weakened.
+      truncated: false
+  - id: A6
+    source: brief.md
+    text: "A6 — The grab test follows the chain: a rope at rest is grabbed exactly
+      as before; a rope whose tail has been displaced 60 px to the side can be
+      grabbed at the displaced tail (which is where it is drawn) and not at the
+      empty straight line."
+    result: passed
+    reason:
+      text: "the_grab_follows_the_chain_not_the_straight_line passes: no grab on the
+        empty straight line (59 px from the displaced chain) and a grab at the
+        displaced tail with hold == rope length, via RopeChain::nearest."
+      truncated: false
+  - id: A7
+    source: brief.md
+    text: "A7 — On release the chain keeps moving continuously: on the release step
+      no link jumps by more than one segment length, and the tail keeps its
+      velocity."
+    result: passed
+    reason:
+      text: release_keeps_the_chain_continuous passes; my probe measured worst link
+        displacement 0.000 px on the release step, tail speed 540 px/s
+        immediately after and 392 px/s one second later.
+      truncated: false
+  - id: A8
+    source: brief.md
+    text: A8 — In play the rope is drawn as a polyline through every link; while
+      editing it is the straight anchor-to-end line; restart and stop put every
+      rope back to hanging straight.
+    result: passed
+    reason:
+      text: main.rs draws Simulation::rope_polyline (hand inserted while held) via
+        RopeEntity::paint_polyline during play and falls back to the straight
+        entity.draw when not playing or when the polyline is empty;
+        restart/respawn rebuilds Simulation so sync_ropes recreates hanging
+        chains, and stop_play sets play=None.
+      truncated: false
+  - id: A9
+    source: brief.md
+    text: "A9 — Determinism: two simulations fed the same inputs produce identical
+      chains."
+    result: passed
+    reason:
+      text: the_chain_is_deterministic passes, and my probe with two independently
+        constructed Simulations driven by the same script produced identical
+        RopeChains.
+      truncated: false
+  - id: A10
+    source: brief.md
+    text: A10 — `game_config.rs` declares `ROPE_SEGMENT_LEN` 16 px,
+      `ROPE_CHAIN_DAMPING` 0.985 per step, `ROPE_CHAIN_ITERATIONS` 80 and
+      `ROPE_SETTLE_SPEED` 2 px/s; the README calls the rope flexible; `cargo
+      test` and `cargo build` pass.
+    result: passed
+    reason:
+      text: game_config.rs declares ROPE_SEGMENT_LEN 16.0, ROPE_CHAIN_DAMPING 0.985,
+        ROPE_CHAIN_ITERATIONS 80, ROPE_SETTLE_SPEED 2.0; README says the rope is
+        a flexible chain; I re-ran cargo test (192 unit + 1 integration, all
+        pass) and cargo build (no warnings in the touched code).
+      truncated: false
+  - id: A11
+    source: specs/rope-swing/spec.md
+    text: "> Amended 2026-09-14 by the flexible-rope change: the rope is now a
+      flexible chain. The pendulum that drives the swing is unchanged; the
+      rope's own shape, the free rope and the grab geometry are defined by the
+      chain (see *Rope chain*)."
+    result: passed
+    reason:
+      text: The rope is now a chain (RopeChain) while RopeSwing and the whole pendulum
+        update in step_rope are byte-identical to the archived version; shape,
+        free rope and grab geometry all come from the chain.
+      truncated: false
+  - id: A12
+    source: specs/rope-swing/spec.md
+    text: "Complete target behaviour of ropes in the editor's play simulation. This
+      is also the reference model for the Bevy game: the constants are declared
+      in `game_config.rs` with the same names the game will use, and the
+      equations below are what both implementations integrate. World space here
+      is the editor's (Y-down); the game flips Y as it does for all level data."
+    result: passed
+    reason:
+      text: All rope constants live in game_config.rs under the names the spec lists,
+        and sim.rs integrates exactly the stated equations in editor Y-down
+        space.
+      truncated: false
+  - id: A13
+    source: specs/rope-swing/spec.md
+    text: "| Name | Value | Meaning |"
+    result: passed
+    reason:
+      text: The constants table is reproduced in game_config.rs with matching names,
+        values and doc comments.
+      truncated: false
+  - id: A14
+    source: specs/rope-swing/spec.md
+    text: '| `ROPE_BITMAP` | `"rope_tool"` | Level `bitmap_name` the importers turn
+      into a rope. |'
+    result: passed
+    reason:
+      text: ROPE_BITMAP = "rope_tool" in game_config.rs:176, unchanged and still used
+        by the level round-trip tests.
+      truncated: false
+  - id: A15
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_THICKNESS` | 6 px | Saved `size.x` and drawn line width. |"
+    result: passed
+    reason:
+      text: ROPE_THICKNESS = 6.0 (game_config.rs:178); it is both the saved size.x and
+        the stroke width used by paint_polyline.
+      truncated: false
+  - id: A16
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_MIN_LENGTH` | 60 px | Shortest rope the tool creates or the
+      loader accepts. |"
+    result: passed
+    reason:
+      text: ROPE_MIN_LENGTH = 60.0 (game_config.rs:180), still enforced by
+        RopeEntity::place and the loader.
+      truncated: false
+  - id: A17
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_MIN_HOLD` | 40 px | Closest the hold point gets to the anchor. |"
+    result: passed
+    reason:
+      text: ROPE_MIN_HOLD = 40.0 (game_config.rs:182); used as the grab's from_arc and
+        the hold clamp.
+      truncated: false
+  - id: A18
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_GRAB_HALF_WIDTH` | 30 px | Max distance from the character's
+      centre to the rope line for a grab. |"
+    result: passed
+    reason:
+      text: ROPE_GRAB_HALF_WIDTH = 30.0 (game_config.rs:184); compared against the
+        chain-polyline distance in try_grab_rope.
+      truncated: false
+  - id: A19
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_PUMP_ACCEL` | 900 px/s² | Tangential acceleration while left /
+      right is held. |"
+    result: passed
+    reason:
+      text: ROPE_PUMP_ACCEL = 900.0 (game_config.rs:186), used unchanged in step_rope.
+      truncated: false
+  - id: A20
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_DAMPING` | 0.35 /s | Angular-velocity decay rate. |"
+    result: passed
+    reason:
+      text: ROPE_DAMPING = 0.35 (game_config.rs:188), used unchanged in the angular
+        update.
+      truncated: false
+  - id: A21
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_MAX_ANGLE_DEG` | 75° | The swing never passes this angle from
+      vertical. |"
+    result: passed
+    reason:
+      text: ROPE_MAX_ANGLE_DEG = 75.0 (game_config.rs:190);
+        pumping_builds_a_swing_capped_at_the_max_angle still passes.
+      truncated: false
+  - id: A22
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_RELEASE_HOP_HEIGHT` | `WALL_JUMP_HEIGHT` 190 px | Upward boost
+      added on release. |"
+    result: passed
+    reason:
+      text: ROPE_RELEASE_HOP_HEIGHT = WALL_JUMP_HEIGHT = 190.0
+        (game_config.rs:53,192), asserted by the release test.
+      truncated: false
+  - id: A23
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_REGRAB_LOCK` | 0.25 s | No grab of any rope for this long after a
+      release. |"
+    result: passed
+    reason:
+      text: ROPE_REGRAB_LOCK = 0.25 (game_config.rs:194), asserted by the regrab-lock
+        test.
+      truncated: false
+  - id: A24
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_SEGMENT_LEN` | 16 px | Rest length of one chain link (a rope has
+      at least 3). |"
+    result: passed
+    reason:
+      text: ROPE_SEGMENT_LEN = 16.0 (game_config.rs:198); RopeChain::hanging uses
+        max(3, round(length/16)) links, which my probe confirmed for lengths
+        40/60/100/300/1000.
+      truncated: false
+  - id: A25
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_CHAIN_DAMPING` | 0.985 | Per-step velocity retention of free
+      chain links. |"
+    result: passed
+    reason:
+      text: ROPE_CHAIN_DAMPING = 0.985 (game_config.rs:200), applied per step in
+        RopeChain::integrate.
+      truncated: false
+  - id: A26
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_CHAIN_ITERATIONS` | 80 | Distance-constraint passes per step. |"
+    result: passed
+    reason:
+      text: ROPE_CHAIN_ITERATIONS = 80 (game_config.rs:203), the constraint-pass count
+        in integrate, matching the re-confirmed spec value.
+      truncated: false
+  - id: A27
+    source: specs/rope-swing/spec.md
+    text: "| `ROPE_SETTLE_SPEED` | 2 px/s | Below this for every link, a free rope
+      snaps to hanging straight. |"
+    result: passed
+    reason:
+      text: ROPE_SETTLE_SPEED = 2.0 (game_config.rs:205), used by is_settled to snap a
+        free rope to hanging straight.
+      truncated: false
+  - id: A28
+    source: specs/rope-swing/spec.md
+    text: "| `CLIMB_SPEED` | 140 px/s (existing) | Speed of the hold point along the
+      rope. |"
+    result: passed
+    reason:
+      text: CLIMB_SPEED = 140.0 (game_config.rs:59), unchanged and still driving the
+        hold along the rope.
+      truncated: false
+  - id: A29
+    source: specs/rope-swing/spec.md
+    text: "| `GRAVITY` | 1400 px/s² (existing) | Pendulum gravity. |"
+    result: passed
+    reason:
+      text: GRAVITY = 1400.0 (game_config.rs:19), used by both the pendulum and the
+        chain integration.
+      truncated: false
+  - id: A30
+    source: specs/rope-swing/spec.md
+    text: "Every rope is a chain of `n = max(3, round(length / ROPE_SEGMENT_LEN))`
+      links of rest length `length / n`, positions `p_0 ..= p_n` with `p_0`
+      pinned at the anchor. Chain state is play state: it starts hanging
+      straight when play starts or restarts and is never level data."
+    result: passed
+    reason:
+      text: RopeChain::hanging computes n = max(3, round(length/ROPE_SEGMENT_LEN)) and
+        seg_len = length/n with p0 at the anchor (probe-confirmed for five
+        lengths); chains live only in Simulation::rope_chains, are rebuilt by
+        sync_ropes and are never serialised.
+      truncated: false
+  - id: A31
+    source: specs/rope-swing/spec.md
+    text: "Each fixed step, for every link that is not pinned: `v = (p − p_prev) ·
+      ROPE_CHAIN_DAMPING`, `p_prev = p`, `p += v + (0, GRAVITY) · dt²`; then
+      `ROPE_CHAIN_ITERATIONS` passes enforce every segment's rest length (a
+      hanging chain needs the gravity error to propagate all the way up to the
+      anchor, which is why the count is high) by moving the two links toward or
+      away from each other (a pinned link does not move; a free link takes the
+      whole correction against a pinned one). A free rope is only this chain
+      under gravity; when every link's speed is below `ROPE_SETTLE_SPEED` it
+      snaps to hanging straight down and rests (it is not simulated again until
+      a grab or release disturbs it)."
+    result: passed
+    reason:
+      text: integrate implements v = (p-p_prev)*ROPE_CHAIN_DAMPING; p_prev = p; p += v
+        + (0,GRAVITY)*dt^2 followed by 80 constraint passes with a pinned parent
+        taking no correction and a free pair splitting it; step_free snaps to
+        hanging and sets resting when is_settled, and returns early while
+        resting (my probe confirmed an idle chain is bit-identical after 2 s).
+      truncated: false
+  - id: A32
+    source: specs/rope-swing/spec.md
+    text: "While held (see *Swinging*), the pendulum owns the part from the anchor
+      to the hands: angle `θ` and hold length `L` are the archived pendulum's;
+      the links with arc length `s ≤ L` are pinned at `anchor + s · (sin θ, cos
+      θ)` and the hand link (the one at arc length `L`, inserted or moved to
+      that arc length) at the hold position; the links beyond the hand run free,
+      hanging from the hand and lagging the swing."
+    result: passed
+    reason:
+      text: "step_held pins every link with arc <= hold on anchor+dir(theta)*s and
+        constrains the first free link to the hand at rest distance (arc-hold),
+        so the rope passes through the hands; the remaining links integrate
+        freely (probe: taut deviation 0.00000 px, tail segments within 0.02%)."
+      truncated: false
+  - id: A33
+    source: specs/rope-swing/spec.md
+    text: The rope's line, for drawing and for the grab test, is the polyline
+      through the links; the archived straight-line description is superseded.
+    result: passed
+    reason:
+      text: Drawing uses Simulation::rope_polyline (the links, hand inserted) and the
+        grab uses RopeChain::nearest along the same link polyline; the old
+        straight-line grab geometry was deleted.
+      truncated: false
+  - id: A34
+    source: specs/rope-swing/spec.md
+    text: "A grab happens on a simulation step when all hold:"
+    result: passed
+    reason:
+      text: try_grab_rope gates the grab on all four listed conditions before
+        selecting the nearest rope.
+      truncated: false
+  - id: A35
+    source: specs/rope-swing/spec.md
+    text: the character's condition is normal (not hurt, not dead) and no regrab
+      lock is running;
+    result: passed
+    reason:
+      text: regrab_lock_left > 0.0 returns early; the hurt lockout blanks the input at
+        the top of step (so axis_y is 0 and no grab happens) and death restarts
+        the session, which is the archived behaviour and is still covered by
+        being_hurt_drops_the_rope_and_dash_cannot_start_on_it.
+      truncated: false
+  - id: A36
+    source: specs/rope-swing/spec.md
+    text: the character is not dashing;
+    result: passed
+    reason:
+      text: try_grab_rope returns early when self.is_dashing(); the archived dash test
+        still passes.
+      truncated: false
+  - id: A37
+    source: specs/rope-swing/spec.md
+    text: up or down is held (`axis_y ≠ 0`);
+    result: passed
+    reason:
+      text: try_grab_rope returns early when input.axis_y() == 0.0, asserted by
+        holding_up_beside_a_rope_grabs_it_at_that_height.
+      truncated: false
+  - id: A38
+    source: specs/rope-swing/spec.md
+    text: the distance from the character's centre to the rope's chain polyline is
+      at most `ROPE_GRAB_HALF_WIDTH`, measured against the part of the chain
+      from `ROPE_MIN_HOLD` of arc length to the end.
+    result: passed
+    reason:
+      text: The reach test is RopeChain::nearest(self.pos, ROPE_MIN_HOLD.min(length))
+        compared against ROPE_GRAB_HALF_WIDTH, i.e. the chain polyline from 40
+        px of arc length to the end; my probe confirmed a grab 20 px below the
+        anchor still clamps to hold 40 and the archived 'right at the anchor'
+        case is refused.
+      truncated: false
+  - id: A39
+    source: specs/rope-swing/spec.md
+    text: "On grab: the hold length `L` is the arc length along the chain to the
+      nearest point, clamped to `[ROPE_MIN_HOLD, length]`; `θ` is the direction
+      from the anchor to that point; `ω = (v · t) / L` where `v` is the
+      character's velocity and `t = (cos θ, −sin θ)` the tangent, so momentum
+      carries into the swing. The taut part snaps onto the straight line
+      (tension). The character's state becomes `Rope`; the overlay label is
+      `rope`."
+    result: passed
+    reason:
+      text: hold = arc.clamp(ROPE_MIN_HOLD, length); theta = atan2 of the grabbed
+        point relative to the anchor (clamped to the 75 deg cap as agreed);
+        ang_vel = v . tangent / hold
+        (running_into_a_rope_carries_momentum_into_the_swing passes); step_held
+        then snaps the taut part straight; state becomes Rope with label "rope".
+      truncated: false
+  - id: A40
+    source: specs/rope-swing/spec.md
+    text: "While on the rope, each step:"
+    result: passed
+    reason:
+      text: step_rope runs the listed sequence each step; its pendulum block is
+        unchanged from the archived version apart from the added chain call.
+      truncated: false
+  - id: A41
+    source: specs/rope-swing/spec.md
+    text: "pump: `a_t = axis_x · ROPE_PUMP_ACCEL`;"
+    result: passed
+    reason:
+      text: pump = input.axis_x() * ROPE_PUMP_ACCEL in step_rope, unchanged.
+      truncated: false
+  - id: A42
+    source: specs/rope-swing/spec.md
+    text: "`ω̇ = −(GRAVITY / L) · sin θ + a_t / L − ROPE_DAMPING · ω`; `θ += ω ·
+      dt`;"
+    result: passed
+    reason:
+      text: ang_vel += (-(GRAVITY/hold)*sin(angle) + pump/hold -
+        ROPE_DAMPING*ang_vel)*dt; angle += ang_vel*dt, unchanged; the period
+        test stays within 10%.
+      truncated: false
+  - id: A43
+    source: specs/rope-swing/spec.md
+    text: "angle cap: if `|θ|` would exceed `ROPE_MAX_ANGLE_DEG`, `θ` is clamped to
+      it and `ω` is set to 0 when it points outward;"
+    result: passed
+    reason:
+      text: The clamp sets angle to +/-max_angle and zeroes ang_vel when it points
+        outward; pumping_builds_a_swing_capped_at_the_max_angle passes.
+      truncated: false
+  - id: A44
+    source: specs/rope-swing/spec.md
+    text: "climb: `L += −axis_y · CLIMB_SPEED · dt` (up shortens), clamped to
+      `[ROPE_MIN_HOLD, length]`;"
+    result: passed
+    reason:
+      text: hold = (hold + axis_y*CLIMB_SPEED*dt).clamp(ROPE_MIN_HOLD.min(length),
+        length), unchanged;
+        up_and_down_move_the_hold_along_the_rope_within_bounds passes.
+      truncated: false
+  - id: A45
+    source: specs/rope-swing/spec.md
+    text: the character's centre is placed at `A + L · (sin θ, cos θ)` and its
+      velocity set to `L · ω · t`; the character faces the direction of `ω` when
+      it is non-zero.
+    result: passed
+    reason:
+      text: pos = anchor + dir*hold, vel = tangent*(hold*ang_vel), facing =
+        ang_vel.signum() when |ang_vel| > 1e-3, all unchanged.
+      truncated: false
+  - id: A46
+    source: specs/rope-swing/spec.md
+    text: The taut part of the chain is pinned along `θ` while held (see *Rope
+      chain*); the tail hangs from the hands.
+    result: passed
+    reason:
+      text: step_rope calls rope_chains[i].step_held(angle, hold, dt) at the end of
+        every held step; my probe measured the taut links exactly on the line
+        and the tail hanging from and trailing the hand.
+      truncated: false
+  - id: A47
+    source: specs/rope-swing/spec.md
+    text: "After placement the usual capsule-vs-polygon push-out runs. If the
+      character was pushed, the rope's angle is recomputed from the pushed
+      centre (`θ = atan2(dx, dy)` relative to the anchor, `L` unchanged) and `ω`
+      is set to 0: the swing stops against the wall."
+    result: passed
+    reason:
+      text: The push-out loop then re-aims theta = atan2(dx,dy) from the pushed
+        centre, zeroes ang_vel and the velocity;
+        a_wall_in_the_swing_path_stops_the_swing passes.
+      truncated: false
+  - id: A48
+    source: specs/rope-swing/spec.md
+    text: Landing on ground does not detach (the character can stand at the rope's
+      end while holding it); grounded contact does not change the state.
+    result: passed
+    reason:
+      text: step_rope sets grounded = false and returns before any grounded
+        transition, so standing at the rope's end keeps State::Rope; the
+        climb-bounds test hangs at the very end without detaching.
+      truncated: false
+  - id: A49
+    source: specs/rope-swing/spec.md
+    text: "A non-normal condition (hurt, dead), or a restart / respawn, drops the
+      rope: state returns to airborne with the current velocity, and the chain
+      runs free from its current shape and motion."
+    result: passed
+    reason:
+      text: "lock_control and apply_knockback call drop_rope, which hands the chain
+        the pendulum velocities via release() and sets State::Airborne (my
+        probe: 0.000 px link jump on the drop, 635 px/s chain speed the next
+        step); respawn rebuilds the Simulation so sync_ropes restores hanging
+        chains (respawn_resets_every_rope_to_hanging_still asserts the exact
+        hanging chain)."
+      truncated: false
+  - id: A50
+    source: specs/rope-swing/spec.md
+    text: Dash and wall jump cannot start while on the rope; attack and shield
+      follow `play-combat` unchanged.
+    result: passed
+    reason:
+      text: step_rope returns before try_start_dash and the wall-jump path;
+        being_hurt_drops_the_rope_and_dash_cannot_start_on_it passes, and combat
+        is untouched by this change.
+      truncated: false
+  - id: A51
+    source: specs/rope-swing/spec.md
+    text: "Pressing jump while on the rope releases it: state becomes airborne,
+      velocity = `L · ω · t + (0, −jump_speed(ROPE_RELEASE_HOP_HEIGHT))` (the
+      same `jump_speed` the simulation uses for jumps), the air dash is
+      restored, and `ROPE_REGRAB_LOCK` starts. The chain runs free from its
+      current shape: each formerly taut link keeps its pendulum velocity `s · ω
+      · t`, so nothing jumps, and the rope swings and ripples on, damped."
+    result: passed
+    reason:
+      text: "The jump branch sets vel = tangent*(hold*ang_vel) + (0,-jump_speed(190)),
+        restores the air dash, starts the regrab lock and calls
+        chain.release(angle, ang_vel, hold, dt), which sets prev = p -
+        tangent*(s*ang_vel*dt) for every taut link; probe: no link moves on that
+        step and the chain still runs at 392 px/s a second later."
+      truncated: false
+  - id: A52
+    source: specs/rope-swing/spec.md
+    text: While playing, each rope is drawn as a polyline through its chain links,
+      in the same colour as on the canvas. When not playing, ropes are drawn as
+      a straight line from the anchor to the end.
+    result: passed
+    reason:
+      text: main.rs maps rope_polyline into screen space and calls
+        RopeEntity::paint_polyline with ROPE_COLOR/ROPE_THICKNESS while playing,
+        and entity.draw (straight anchor-to-end) when self.play is None.
+      truncated: false
+  - id: A53
+    source: specs/rope-swing/spec.md
+    text: A1 — Holding up or down within 30 px of a rope's line, at least 40 px
+      below the anchor, attaches the character at that height; the overlay reads
+      `rope`.
+    result: passed
+    reason:
+      text: 'holding_up_beside_a_rope_grabs_it_at_that_height passes: grab at 200 px
+        below the anchor from 20 px away, State::Rope with label "rope", and no
+        grab without axis_y.'
+      truncated: false
+  - id: A54
+    source: specs/rope-swing/spec.md
+    text: A2 — From rest at 30° with no input the swing's period is within 10% of
+      `2π·sqrt(L / GRAVITY)`, and it settles to `θ = 0`.
+    result: passed
+    reason:
+      text: "a_rope_swings_with_the_pendulum_period_and_settles passes: measured
+        period within 10% of 2*pi*sqrt(L/g) and |theta| < 0.01 after damping."
+      truncated: false
+  - id: A55
+    source: specs/rope-swing/spec.md
+    text: A3 — Holding right from a hanging rest builds a swing whose angle never
+      exceeds 75°.
+    result: passed
+    reason:
+      text: "pumping_builds_a_swing_capped_at_the_max_angle passes: the angle reaches
+        but never exceeds 75 deg over 20 s of holding right."
+      truncated: false
+  - id: A56
+    source: specs/rope-swing/spec.md
+    text: A4 — Up / down move `L` at 140 px/s, bounded by 40 px and the rope's
+      length.
+    result: passed
+    reason:
+      text: "up_and_down_move_the_hold_along_the_rope_within_bounds passes: 140 px/s,
+        clamped to [40, 300]."
+      truncated: false
+  - id: A57
+    source: specs/rope-swing/spec.md
+    text: A5 — Jump releases with `L · ω · t` plus a 190 px hop; no grab is possible
+      for 0.25 s; the rope goes on swinging.
+    result: passed
+    reason:
+      text: jump_releases_with_the_swing_velocity_plus_a_hop_and_locks_regrab passes
+        (tangential speed, 190 px hop, no grab for 0.25 s) and now asserts the
+        chain keeps moving (>50 px/s; measured 540 px/s).
+      truncated: false
+  - id: A58
+    source: specs/rope-swing/spec.md
+    text: A6 — Entering the rope at run speed gives `ω = (v · t) / L`.
+    result: passed
+    reason:
+      text: "running_into_a_rope_carries_momentum_into_the_swing passes: ang_vel
+        within 10% of v/L at run speed."
+      truncated: false
+  - id: A59
+    source: specs/rope-swing/spec.md
+    text: A7 — A polygon in the swing path stops the swing; hurt or death drops the
+      rope; dash and wall jump do not start while on it.
+    result: passed
+    reason:
+      text: a_wall_in_the_swing_path_stops_the_swing and
+        being_hurt_drops_the_rope_and_dash_cannot_start_on_it both pass; death
+        routes through PlaySession::restart.
+      truncated: false
+  - id: A60
+    source: specs/rope-swing/spec.md
+    text: A8 — Restart and stop reset every rope to hanging straight; play never
+      changes rope entities or `has_unsaved_changes()`.
+    result: passed
+    reason:
+      text: Restart (PlaySession::restart -> respawn -> fresh Simulation) and stop
+        (play = None) both return every rope to hanging straight; chain state
+        lives only in Simulation::rope_chains and the play drawing branch reads
+        the entity without mutating it, so no rope entity or dirty flag is
+        touched.
+      truncated: false
+  - id: A61
+    source: specs/rope-swing/spec.md
+    text: A9 — `game_config.rs` declares the constants above with these values.
+    result: passed
+    reason:
+      text: All fifteen constants in the spec table are declared in game_config.rs
+        with exactly the listed values (verified line by line).
+      truncated: false
+  - id: A62
+    source: specs/rope-swing/spec.md
+    text: "A10 — Chain: every segment keeps its rest length within 2% and link 0
+      stays at the anchor; a displaced free rope ripples and settles to straight
+      within 6 s."
+    result: passed
+    reason:
+      text: "Segment lengths hold within 2% (probe: 0.11% worst free, 0.02% worst held
+        tail, 0.018% on the hand pair, 0.00 px on the taut part) with link 0
+        fixed at the anchor, and the displaced rope ripples across and settles
+        straight in 2.64 s, well inside 6 s."
+      truncated: false
+  - id: A63
+    source: specs/rope-swing/spec.md
+    text: A11 — While held, the links up to the hand lie on the taut line at `θ` and
+      the hand link is at the hold position; the tail hangs from the hand and
+      lags the swing.
+    result: passed
+    reason:
+      text: "Probe over a 3 s held swing: taut links exactly on the theta line
+        (0.00000 px), the hand at the hold position, the first free link at its
+        rest distance from the hand, and the tail trailing the hand by 168 px at
+        peak speed after a real grab and pump."
+      truncated: false
+  - id: A64
+    source: specs/rope-swing/spec.md
+    text: A12 — The grab test follows the chain polyline; on release no link jumps
+      more than one segment length; the chain is deterministic for identical
+      inputs.
+    result: passed
+    reason:
+      text: The grab uses RopeChain::nearest on the chain polyline (displaced-tail
+        test), the release moves no link more than a segment (measured 0.000
+        px), and two independently built simulations produce identical chains.
+      truncated: false
+  - id: A65
+    source: specs/rope-swing/spec.md
+    text: A13 — In play the rope is drawn as a polyline through its links; while
+      editing it is a straight line.
+    result: passed
+    reason:
+      text: In play main.rs paints the rope_polyline through every link (plus the
+        inserted hand point); with no play session it paints the straight
+        anchor-to-end line, and an empty polyline falls back to the straight
+        line too.
+      truncated: false
+builder_handoff:
+  candidate_id: 5d9140a9-6d84-4e66-9f2d-e7aba94157a8
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:47ef540c-6bd1-443a-99e4-5b30c4b849f8
+  iteration: 1
+  summary:
+    text: "Flexible rope in the editor simulation. sim.rs: RopeChain (Verlet links
+      of ROPE_SEGMENT_LEN, link 0 pinned, damping, ROPE_CHAIN_ITERATIONS
+      symmetric relaxation passes, settle-and-rest), one chain per rope kept in
+      Simulation beside the pendulum; free ropes step as chains; while held,
+      step_held pins the links up to the hold on the taut line and hangs the
+      rest from the hand (the first free link is constrained to the hand point);
+      try_grab_rope measures reach and hold arc length along the chain polyline
+      and aims the pendulum at the grabbed link; release/drop give the taut
+      links the pendulum velocity so the chain runs on continuously;
+      rope_polyline exposes the drawn line with the hand inserted. The rigid
+      free pendulum is gone. entities.rs: paint_polyline; main.rs draws the
+      chain in play and the straight line while editing. game_config.rs:
+      ROPE_SEGMENT_LEN 16, ROPE_CHAIN_DAMPING 0.985, ROPE_CHAIN_ITERATIONS 80,
+      ROPE_SETTLE_SPEED 2. README says the rope is flexible. Seven new chain
+      tests; all archived rope tests still pass (two were updated only in how
+      they still the rope between checks)."
+    truncated: false
+  addressed_acceptance_ids:
+    - A1
+    - A2
+    - A3
+    - A4
+    - A5
+    - A6
+    - A7
+    - A8
+    - A9
+    - A10
+  checks:
+    - name:
+        text: cargo test
+        truncated: false
+      result: passed
+      note:
+        text: 192 unit tests + 1 integration test pass
+        truncated: false
+    - name:
+        text: cargo build
+        truncated: false
+      result: passed
+      note:
+        text: no new warnings in touched code
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: "ROPE_CHAIN_ITERATIONS was raised from the originally drafted 8 to 80
+        during Build: with fewer passes a hanging chain never converges against
+        gravity and breathes visibly; the brief and spec were updated to 80."
+      truncated: false
+    - text: A settled free rope rests (is not simulated) until a grab or release wakes
+        it.
+      truncated: false
+  known_limits_truncated: false
+  submitted_at: 2026-09-15T06:38:03.699Z
+blockers: []
+verification:
+  candidate_id: 5d9140a9-6d84-4e66-9f2d-e7aba94157a8
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:5583faed-d455-454e-8506-5cec1a21a2d3
+  iteration: 1
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: pass
+  checks:
+    - id: cargo-test
+      name:
+        text: cargo test
+        truncated: false
+      argv_display:
+        - text: test
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 347
+    - id: cargo-build
+      name:
+        text: cargo build
+        truncated: false
+      argv_display:
+        - text: build
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 178
+  summary:
+    text: "The flexible-rope implementation satisfies all 65 acceptance items. I
+      re-ran cargo test (192 unit + 1 integration, all pass) and cargo build (no
+      warnings in touched code), and independently probed the chain in an
+      out-of-tree clone: link counts follow max(3, round(len/16)) for every
+      length tried, the taut part sits exactly on the pendulum line (0.00000
+      px), the free tail keeps rest lengths within 0.02%, a displaced rope
+      ripples across and settles straight in 2.64 s, release and hurt-drop move
+      no link at all while leaving the chain at 540 px/s, the tail lag is
+      emergent from a real grab plus pump (-168 px at peak speed), and two
+      independently constructed simulations produce identical chains. The
+      archived pendulum code in step_rope is unchanged, the constants match the
+      spec table including ROPE_CHAIN_ITERATIONS 80, and drawing uses the
+      hand-inserted polyline in play with the straight line (and an
+      empty-polyline fallback) while editing."
+    truncated: false
+  risks:
+    - text: While held, the raw links array has one link-to-link pair straddling the
+        hand whose endpoint distance is not seg_len (up to ~36% short); it is
+        exact once the hand node the spec calls for is inserted (the drawn
+        polyline and the constraint solver both use it), so the invariant holds
+        in the spec's terms but a reader of RopeChain::links alone could see it
+        as a stretch.
+      truncated: false
+    - text: Two archived tests were adapted (chain stilled before the regrab, chain
+        speed asserted instead of the now-unused free-pendulum ang_vel); I
+        judged both legitimate, but A5's literal 'unchanged' wording is no
+        longer true of the test text.
+      truncated: false
+    - text: RopeChain::nearest measures arc length with the rest seg_len, which is
+        only exact for a free chain; grabs can only happen off the rope, so no
+        live path hits the held-chain case.
+      truncated: false
+    - text: try_grab_rope and drop_rope pass FIXED_DT rather than the caller's dt to
+        step_held/release; harmless today because every stepping path uses
+        FIXED_DT, but it would drift if a variable step were ever introduced.
+      truncated: false
+    - text: ROPE_CHAIN_ITERATIONS 80 x ~19 links is 1520 constraint passes per rope
+        per 1/120 s step; fine for the editor's rope counts but worth watching
+        in the Bevy port.
+      truncated: false
+  risks_truncated: false
+  completed_at: 2026-09-15T06:47:48.299Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 0
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: Native confirmed acceptance criteria changed
+      truncated: false
+    completed_at: 2026-09-15T06:30:24.910Z
+  - goal_cycle: 2
+    iteration: 1
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: "The flexible-rope implementation satisfies all 65 acceptance items. I
+        re-ran cargo test (192 unit + 1 integration, all pass) and cargo build
+        (no warnings in touched code), and independently probed the chain in an
+        out-of-tree clone: link counts follow max(3, round(len/16)) for every
+        length tried, the taut part sits exactly on the pendulum line (0.00000
+        px), the free tail keeps rest lengths within 0.02%, a displaced rope
+        ripples across and settles straight in 2.64 s, release and hurt-drop
+        move no link at all while leaving the chain at 540 px/s, the tail lag is
+        emergent from a real grab plus pump (-168 px at peak speed), and two
+        independently constructed simulations produce identical chains. The
+        archived pendulum code in step_rope is unchanged, the constants match
+        the spec table including ROPE_CHAIN_ITERATIONS 80, and drawing uses the
+        hand-inserted polyline in play with the straight line (and an
+        empty-polyline fallback) while editing."
+      truncated: false
+    completed_at: 2026-09-15T06:47:48.299Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: true
+created_at: 2026-09-14T17:40:56.088Z

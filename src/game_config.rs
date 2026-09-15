@@ -192,3 +192,14 @@ pub const ROPE_MAX_ANGLE_DEG: f32 = 75.0;
 pub const ROPE_RELEASE_HOP_HEIGHT: f32 = WALL_JUMP_HEIGHT;
 /// No grab of any rope for this long after a release, seconds.
 pub const ROPE_REGRAB_LOCK: f32 = 0.25;
+
+// ── Rope chain (flexibility) ────────────────────────────────────────────────────
+/// Rest length of one chain link, px; a rope has at least 3 links.
+pub const ROPE_SEGMENT_LEN: f32 = 16.0;
+/// Per-step velocity retention of a free chain link.
+pub const ROPE_CHAIN_DAMPING: f32 = 0.985;
+/// Distance-constraint passes per step. A hanging chain needs the whole gravity error
+/// to propagate up to the pinned anchor, which takes many passes; fewer leave it breathing.
+pub const ROPE_CHAIN_ITERATIONS: usize = 80;
+/// When every link of a free rope is slower than this (px/s) it snaps to hanging straight.
+pub const ROPE_SETTLE_SPEED: f32 = 2.0;

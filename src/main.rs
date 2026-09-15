@@ -1715,8 +1715,19 @@ impl eframe::App for EditorState {
                 if let Entity::Rope(rope) = entity {
                     match &self.play {
                         Some(play) => {
-                            let swing = play.player.rope_swing(rope_idx);
-                            RopeEntity::paint(painter, rope.anchor - self.scroll_offset, swing.dir(), rope.length, false);
+                            // The flexible chain, with the hand point inserted while held.
+                            let line: Vec<Pos2> = play
+                                .player
+                                .rope_polyline(rope_idx)
+                                .into_iter()
+                                .map(|p| p - self.scroll_offset)
+                                .collect();
+                            if line.is_empty() {
+                                entity.draw(painter, self.scroll_offset, is_selected);
+                            } else {
+                                RopeEntity::paint_polyline(painter, &line, false);
+                            }
+                            let _ = rope;
                         }
                         None => entity.draw(painter, self.scroll_offset, is_selected),
                     }

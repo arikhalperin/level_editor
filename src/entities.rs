@@ -75,6 +75,20 @@ impl RopeEntity {
     }
 }
 
+impl RopeEntity {
+    /// Draw a rope along `points` (screen space): the chain while playing.
+    pub fn paint_polyline(painter: &egui::Painter, points: &[Pos2], is_selected: bool) {
+        let color = if is_selected { Color32::GREEN } else { ROPE_COLOR };
+        for w in points.windows(2) {
+            painter.line_segment([w[0], w[1]], (cfg::ROPE_THICKNESS, color));
+        }
+        if let Some(anchor) = points.first() {
+            painter.circle_filled(*anchor, cfg::ROPE_THICKNESS, color);
+            painter.circle_stroke(*anchor, cfg::ROPE_THICKNESS, (1.0, Color32::BLACK));
+        }
+    }
+}
+
 impl DrawableEntity for RopeEntity {
     fn draw(&self, painter: &egui::Painter, scroll_offset: Vec2, is_selected: bool) {
         Self::paint(painter, self.anchor - scroll_offset, Vec2::new(0.0, 1.0), self.length, is_selected);

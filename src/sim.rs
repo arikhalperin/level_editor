@@ -136,9 +136,190 @@ impl RopeSwing {
     }
 }
 
-/// Below these the free rope snaps to hanging still.
-const ROPE_REST_ANGLE: f32 = 0.5_f32 * std::f32::consts::PI / 180.0;
-const ROPE_REST_ANG_VEL: f32 = 0.02;
+/// A rope's flexible body: a chain of links pinned at the anchor, advanced as a
+/// position-based (Verlet) chain. While the rope is held, the links up to the hand are
+/// pinned on the taut pendulum line and the rest hang from the hand.
+#[derive(Debug, Clone, PartialEq)]
+pub struct RopeChain {
+    /// Link positions; `links[0]` is the anchor.
+    pub links: Vec<Pos2>,
+    prev: Vec<Pos2>,
+    /// Rest length of every segment.
+    pub seg_len: f32,
+    /// Settled and hanging straight: skipped until a grab or release disturbs it, so an
+    /// idle rope is exactly still rather than re-stretched by gravity every step.
+    resting: bool,
+}
+
+impl RopeChain {
+    /// A rope hanging straight down from `anchor`.
+    pub fn hanging(anchor: Pos2, length: f32) -> Self {
+        let n = ((length / cfg::ROPE_SEGMENT_LEN).round() as usize).max(3);
+        let seg_len = length / n as f32;
+        let links: Vec<Pos2> = (0..=n).map(|i| anchor + Vec2::new(0.0, i as f32 * seg_len)).collect();
+        Self { prev: links.clone(), links, seg_len, resting: true }
+    }
+
+    /// True while the rope hangs still and is not being simulated.
+    #[allow(dead_code)]
+    pub fn is_resting(&self) -> bool {
+        self.resting
+    }
+
+    pub fn anchor(&self) -> Pos2 {
+        self.links[0]
+    }
+
+    pub fn length(&self) -> f32 {
+        self.seg_len * (self.links.len() - 1) as f32
+    }
+
+    /// Arc length from the anchor to link `i`.
+    fn arc(&self, i: usize) -> f32 {
+        i as f32 * self.seg_len
+    }
+
+    /// Verlet integration of every link from `first_free` on, then the constraints.
+    /// `hand` pins the hand point at `hold` of arc length while the rope is held.
+    fn integrate(&mut self, first_free: usize, hand: Option<(Pos2, f32)>, dt: f32) {
+        let g = Vec2::new(0.0, cfg::GRAVITY) * (dt * dt);
+        for i in first_free..self.links.len() {
+            let v = (self.links[i] - self.prev[i]) * cfg::ROPE_CHAIN_DAMPING;
+            self.prev[i] = self.links[i];
+            self.links[i] += v + g;
+        }
+        for _ in 0..cfg::ROPE_CHAIN_ITERATIONS {
+            for i in first_free..self.links.len() {
+                // The link just below the hand hangs from the hand, not from the last
+                // pinned link, so the rope passes through the hands exactly.
+                let (parent, rest) = match hand {
+                    Some((hand_pos, hold)) if i == first_free => (hand_pos, (self.arc(i) - hold).max(0.0)),
+                    _ => (self.links[i - 1], self.seg_len),
+                };
+                let d = self.links[i] - parent;
+                let len = d.length();
+                if len <= f32::EPSILON {
+                    continue;
+                }
+                let correction = d * ((len - rest) / len);
+                if i - 1 < first_free || hand.is_some_and(|_| i == first_free) {
+                    self.links[i] -= correction; // parent is pinned
+                } else {
+                    self.links[i] -= correction * 0.5;
+                    self.links[i - 1] += correction * 0.5;
+                }
+            }
+        }
+    }
+
+    /// A free rope: only the anchor is pinned. A settled rope sleeps, hanging straight.
+    fn step_free(&mut self, dt: f32) {
+        if self.resting {
+            return;
+        }
+        self.integrate(1, None, dt);
+        if self.is_settled(dt) {
+            *self = Self::hanging(self.anchor(), self.length());
+        }
+    }
+
+    /// A held rope: links up to `hold` of arc length are pinned on the taut line at
+    /// `angle`; the rest hang from the hand.
+    fn step_held(&mut self, angle: f32, hold: f32, dt: f32) {
+        self.resting = false;
+        let anchor = self.anchor();
+        let dir = Vec2::new(angle.sin(), angle.cos());
+        let hand = anchor + dir * hold;
+        let mut first_free = self.links.len();
+        for i in 0..self.links.len() {
+            if self.arc(i) <= hold + 1e-3 {
+                self.links[i] = anchor + dir * self.arc(i);
+                self.prev[i] = self.links[i];
+            } else {
+                first_free = i;
+                break;
+            }
+        }
+        if first_free < self.links.len() {
+            self.integrate(first_free, Some((hand, hold)), dt);
+        }
+    }
+
+    /// Give the taut links the pendulum's velocity so the rope runs on continuously
+    /// after a release (`v = s · ω · t`).
+    fn release(&mut self, angle: f32, ang_vel: f32, hold: f32, dt: f32) {
+        self.resting = false;
+        let anchor = self.anchor();
+        let dir = Vec2::new(angle.sin(), angle.cos());
+        let tangent = Vec2::new(angle.cos(), -angle.sin());
+        for i in 1..self.links.len() {
+            let s = self.arc(i);
+            if s <= hold + 1e-3 {
+                self.links[i] = anchor + dir * s;
+                self.prev[i] = self.links[i] - tangent * (s * ang_vel * dt);
+            }
+        }
+    }
+
+    /// True when every link is slower than the settle speed.
+    pub fn is_settled(&self, dt: f32) -> bool {
+        let max = cfg::ROPE_SETTLE_SPEED * dt;
+        self.links.iter().zip(&self.prev).all(|(p, q)| (*p - *q).length() < max)
+    }
+
+    /// Fastest link speed, px/s.
+    #[allow(dead_code)]
+    pub fn max_speed(&self, dt: f32) -> f32 {
+        self.links
+            .iter()
+            .zip(&self.prev)
+            .map(|(p, q)| (*p - *q).length() / dt)
+            .fold(0.0, f32::max)
+    }
+
+    /// Nearest point on the chain to `p`, considering only arc lengths from `from_arc`:
+    /// `(arc length, point, distance)`.
+    pub fn nearest(&self, p: Pos2, from_arc: f32) -> Option<(f32, Pos2, f32)> {
+        let mut best: Option<(f32, Pos2, f32)> = None;
+        for i in 1..self.links.len() {
+            let a = self.links[i - 1];
+            let b = self.links[i];
+            let ab = b - a;
+            let len_sq = ab.length_sq();
+            let mut t = if len_sq <= f32::EPSILON { 0.0 } else { ((p - a).dot(ab) / len_sq).clamp(0.0, 1.0) };
+            let seg_start = self.arc(i - 1);
+            // Only the part of the segment past `from_arc` counts.
+            let t_min = ((from_arc - seg_start) / self.seg_len).clamp(0.0, 1.0);
+            if t_min >= 1.0 {
+                continue;
+            }
+            t = t.max(t_min);
+            let q = a + ab * t;
+            let dist = (p - q).length();
+            if best.is_none_or(|(_, _, d)| dist < d) {
+                best = Some((seg_start + t * self.seg_len, q, dist));
+            }
+        }
+        best
+    }
+
+    /// The rope's line for drawing: the links, with the hand point inserted while held.
+    pub fn polyline(&self, hand: Option<Pos2>, hold: f32) -> Vec<Pos2> {
+        let mut out = Vec::with_capacity(self.links.len() + 1);
+        let mut inserted = hand.is_none();
+        for (i, p) in self.links.iter().enumerate() {
+            if !inserted && self.arc(i) > hold + 1e-3 {
+                out.push(hand.unwrap());
+                inserted = true;
+            }
+            out.push(*p);
+        }
+        if !inserted {
+            out.push(hand.unwrap());
+        }
+        out
+    }
+}
 
 /// What the character is doing, for the status overlay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -214,6 +395,8 @@ pub struct Simulation {
     // Rope
     /// One swing per `World::ropes` entry, in the same order; resized on each step.
     rope_swings: Vec<RopeSwing>,
+    /// One chain per `World::ropes` entry, in the same order.
+    rope_chains: Vec<RopeChain>,
     /// The rope being held, as `(index, hold length from the anchor)`.
     rope_hold: Option<(usize, f32)>,
     /// No grab while positive: the lock after letting go.
@@ -250,6 +433,7 @@ impl Simulation {
             control_lock_left: 0.0,
             bounce: false,
             rope_swings: Vec::new(),
+            rope_chains: Vec::new(),
             rope_hold: None,
             regrab_lock_left: 0.0,
         }
@@ -338,13 +522,31 @@ impl Simulation {
     }
 
     /// The current swing of rope `i` (hanging still if unknown).
+    #[allow(dead_code)]
     pub fn rope_swing(&self, i: usize) -> RopeSwing {
         self.rope_swings.get(i).copied().unwrap_or_default()
     }
 
-    /// Let go without a hop: the character keeps its velocity, the rope keeps swinging.
+    /// The rope's line for drawing: its chain, with the hand point inserted while held.
+    pub fn rope_polyline(&self, i: usize) -> Vec<Pos2> {
+        let Some(chain) = self.rope_chains.get(i) else { return Vec::new() };
+        match self.rope_hold {
+            Some((h, hold)) if h == i => chain.polyline(Some(self.pos), hold),
+            _ => chain.polyline(None, 0.0),
+        }
+    }
+
+    /// The rope's chain (hanging still if unknown).
+    #[allow(dead_code)]
+    pub fn rope_chain(&self, i: usize) -> Option<&RopeChain> {
+        self.rope_chains.get(i)
+    }
+
+    /// Let go without a hop: the character keeps its velocity, the rope runs on freely.
     fn drop_rope(&mut self) {
-        if self.rope_hold.take().is_some() {
+        if let Some((i, hold)) = self.rope_hold.take() {
+            let swing = self.rope_swings[i];
+            self.rope_chains[i].release(swing.angle, swing.ang_vel, hold, FIXED_DT);
             self.state = State::Airborne;
         }
     }
@@ -352,25 +554,27 @@ impl Simulation {
     /// Keep one swing per rope in the world. Ropes are level data and never change
     /// during play, so an existing swing is kept; a fresh world starts every rope still.
     fn sync_ropes(&mut self, world: &World) {
-        if self.rope_swings.len() != world.ropes.len() {
+        let same = self.rope_chains.len() == world.ropes.len()
+            && self
+                .rope_chains
+                .iter()
+                .zip(&world.ropes)
+                .all(|(c, r)| c.anchor() == r.anchor && (c.length() - r.length).abs() < 1e-3);
+        if !same {
             self.rope_swings = vec![RopeSwing::default(); world.ropes.len()];
+            self.rope_chains = world.ropes.iter().map(|r| RopeChain::hanging(r.anchor, r.length)).collect();
             self.rope_hold = None;
         }
     }
 
-    /// Advance every rope nobody is holding as a damped free pendulum.
-    fn step_free_ropes(&mut self, world: &World, dt: f32) {
+    /// Advance every rope nobody is holding as a free chain under gravity.
+    fn step_free_ropes(&mut self, dt: f32) {
         let held = self.rope_hold.map(|(i, _)| i);
-        for (i, (rope, swing)) in world.ropes.iter().zip(self.rope_swings.iter_mut()).enumerate() {
+        for (i, chain) in self.rope_chains.iter_mut().enumerate() {
             if held == Some(i) {
                 continue;
             }
-            let len = rope.length.max(cfg::ROPE_MIN_HOLD);
-            swing.ang_vel += (-(cfg::GRAVITY / len) * swing.angle.sin() - cfg::ROPE_DAMPING * swing.ang_vel) * dt;
-            swing.angle += swing.ang_vel * dt;
-            if swing.angle.abs() < ROPE_REST_ANGLE && swing.ang_vel.abs() < ROPE_REST_ANG_VEL {
-                *swing = RopeSwing::default();
-            }
+            chain.step_free(dt);
         }
     }
 
@@ -379,23 +583,23 @@ impl Simulation {
         if self.regrab_lock_left > 0.0 || input.axis_y() == 0.0 || self.is_dashing() {
             return;
         }
-        let mut best: Option<(usize, f32, f32)> = None; // (index, hold length, distance)
+        let mut best: Option<(usize, f32, f32, f32)> = None; // (index, hold, angle, distance)
         for (i, rope) in world.ropes.iter().enumerate() {
-            let swing = self.rope_swings[i];
-            let d = swing.dir();
-            let start = rope.anchor + d * cfg::ROPE_MIN_HOLD.min(rope.length);
-            let end = rope.anchor + d * rope.length;
-            let nearest = closest_on_segment(start, end, self.pos);
-            let dist = (self.pos - nearest).length();
-            if dist <= cfg::ROPE_GRAB_HALF_WIDTH && best.is_none_or(|(_, _, bd)| dist < bd) {
-                let along = (self.pos - rope.anchor).dot(d);
-                let hold = along.clamp(cfg::ROPE_MIN_HOLD.min(rope.length), rope.length);
-                best = Some((i, hold, dist));
+            // The grab follows the chain: where the rope actually is, from the lowest
+            // hold to the end.
+            let from = cfg::ROPE_MIN_HOLD.min(rope.length);
+            let Some((arc, point, dist)) = self.rope_chains[i].nearest(self.pos, from) else { continue };
+            if dist <= cfg::ROPE_GRAB_HALF_WIDTH && best.is_none_or(|(_, _, _, bd)| dist < bd) {
+                let hold = arc.clamp(from, rope.length);
+                let rel = point - rope.anchor;
+                let angle = rel.x.atan2(rel.y);
+                best = Some((i, hold, angle, dist));
             }
         }
-        let Some((i, hold, _)) = best else { return };
+        let Some((i, hold, angle, _)) = best else { return };
         let swing = &mut self.rope_swings[i];
-        // Momentum carries into the swing.
+        // The taut part snaps straight toward the grabbed point; momentum carries in.
+        swing.angle = angle.clamp(-cfg::ROPE_MAX_ANGLE_DEG.to_radians(), cfg::ROPE_MAX_ANGLE_DEG.to_radians());
         swing.ang_vel = self.vel.dot(swing.tangent()) / hold;
         let d = swing.dir();
         let t = swing.tangent();
@@ -410,6 +614,8 @@ impl Simulation {
         self.wall_jump_carry = false;
         self.coyote_left = 0.0;
         self.jump_buffer_left = 0.0;
+        let swing = self.rope_swings[i];
+        self.rope_chains[i].step_held(swing.angle, hold, FIXED_DT);
     }
 
     /// One step on the rope: release on jump, else swing, pump, climb and collide.
@@ -418,10 +624,12 @@ impl Simulation {
         let rope = world.ropes[i];
 
         if self.jump_buffer_left > 0.0 {
-            // Let go with the swing's velocity plus a hop; the rope swings on.
+            // Let go with the swing's velocity plus a hop; the rope runs on from the
+            // pendulum's motion.
             let swing = self.rope_swings[i];
             self.vel = swing.tangent() * (hold * swing.ang_vel)
                 + Vec2::new(0.0, -Self::jump_speed(cfg::ROPE_RELEASE_HOP_HEIGHT));
+            self.rope_chains[i].release(swing.angle, swing.ang_vel, hold, dt);
             self.rope_hold = None;
             self.state = State::Airborne;
             self.in_jump = true;
@@ -479,6 +687,10 @@ impl Simulation {
         self.grounded = false;
         self.wall_dir = 0.0;
         self.wall_climbable = false;
+
+        // The chain: taut up to the hands, hanging from them below.
+        let swing = self.rope_swings[i];
+        self.rope_chains[i].step_held(swing.angle, hold, dt);
     }
 
     /// Axis-aligned bounds of the capsule, for overlap tests against boxes.
@@ -524,7 +736,7 @@ impl Simulation {
         self.tick_timers(dt, input);
         self.regrab_lock_left = (self.regrab_lock_left - dt).max(0.0);
         self.sync_ropes(world);
-        self.step_free_ropes(world, dt);
+        self.step_free_ropes(dt);
 
         if self.rope_hold.is_some() {
             self.step_rope(world, input, dt);
@@ -1056,7 +1268,7 @@ mod tests {
         assert!((sim.vel.x - expect_vx).abs() < 5.0, "keeps the tangential speed, got {} vs {expect_vx}", sim.vel.x);
         let hop = (2.0 * cfg::GRAVITY * cfg::ROPE_RELEASE_HOP_HEIGHT).sqrt();
         assert!(sim.vel.y < -hop + 20.0, "plus the hop, got {}", sim.vel.y);
-        assert!(sim.rope_swing(0).ang_vel.abs() > 1.0, "the rope swings on");
+        assert!(sim.rope_chain(0).unwrap().max_speed(DT) > 50.0, "the rope runs on");
 
         // Held up right at the rope: no grab during the lock, grab after it.
         sim.pos = Pos2::new(ROPE_ANCHOR.x, ROPE_ANCHOR.y + 200.0);
@@ -1070,6 +1282,7 @@ mod tests {
         }
         // The rope swung on meanwhile; still it so the character is on its line again.
         sim.rope_swings[0] = RopeSwing::default();
+        sim.rope_chains[0] = RopeChain::hanging(ROPE_ANCHOR, ROPE_LEN);
         sim.pos = Pos2::new(ROPE_ANCHOR.x, ROPE_ANCHOR.y + 200.0);
         sim.vel = Vec2::ZERO;
         sim.step(&world, UP, DT);
@@ -1114,6 +1327,181 @@ mod tests {
         assert_eq!(sim.state, State::Airborne);
     }
 
+    // ── Rope chain (flexibility) ─────────────────────────────────────────────
+
+    fn chain_of(sim: &Simulation) -> &RopeChain {
+        sim.rope_chain(0).unwrap()
+    }
+
+    fn assert_segments_intact(chain: &RopeChain) {
+        for w in chain.links.windows(2) {
+            let len = (w[1] - w[0]).length();
+            assert!((len - chain.seg_len).abs() <= chain.seg_len * 0.02, "segment {len} vs {}", chain.seg_len);
+        }
+    }
+
+    #[test]
+    fn a_rope_is_a_chain_of_sixteen_px_links_pinned_at_the_anchor() {
+        let world = rope_world();
+        let mut sim = Simulation::new(Pos2::new(0.0, 0.0));
+        sim.step(&world, none(), DT);
+        let chain = chain_of(&sim);
+        assert_eq!(chain.links.len() - 1, 19, "300 px / 16 px, rounded");
+        assert!((chain.length() - ROPE_LEN).abs() < 1e-3);
+        assert_eq!(chain.anchor(), ROPE_ANCHOR);
+        assert_segments_intact(chain);
+        for p in &chain.links {
+            assert_eq!(p.x, ROPE_ANCHOR.x, "hangs straight at rest");
+        }
+    }
+
+    /// Swing the free rope rigidly about its anchor so the tail ends up `dx` to the side.
+    fn displace_tail(sim: &mut Simulation, dx: f32) {
+        let chain = &mut sim.rope_chains[0];
+        chain.resting = false;
+        let angle = (dx / chain.length()).asin();
+        let dir = Vec2::new(angle.sin(), angle.cos());
+        for i in 1..chain.links.len() {
+            chain.links[i] = ROPE_ANCHOR + dir * (i as f32 * chain.seg_len);
+            chain.prev[i] = chain.links[i];
+        }
+    }
+
+    #[test]
+    fn a_displaced_free_rope_ripples_and_settles_straight() {
+        let world = rope_world();
+        let mut sim = Simulation::new(Pos2::new(0.0, 0.0));
+        sim.step(&world, none(), DT);
+        displace_tail(&mut sim, 120.0);
+        let mut moved = false;
+        for _ in 0..(6.0 / DT) as usize {
+            sim.step(&world, none(), DT);
+            let chain = chain_of(&sim);
+            assert_segments_intact(chain);
+            assert_eq!(chain.anchor(), ROPE_ANCHOR, "the anchor never moves");
+            if chain.links.last().unwrap().x < ROPE_ANCHOR.x {
+                moved = true; // swung through to the other side
+            }
+        }
+        assert!(moved, "the tail should swing across, not just sag");
+        let chain = chain_of(&sim);
+        assert!(chain.is_settled(DT), "settled within 6 s, max speed {}", chain.max_speed(DT));
+        for p in &chain.links {
+            assert!((p.x - ROPE_ANCHOR.x).abs() < 1.0, "hangs straight again, got x={}", p.x);
+        }
+    }
+
+    #[test]
+    fn while_held_the_links_up_to_the_hand_are_taut_and_the_tail_hangs_from_it() {
+        let (mut sim, world) = hanging(200.0);
+        sim.rope_swings[0] = RopeSwing { angle: 30_f32.to_radians(), ang_vel: 0.0 };
+        sim.step(&world, none(), DT);
+        let (_, hold) = sim.rope_hold().unwrap();
+        let swing = sim.rope_swing(0);
+        let chain = chain_of(&sim);
+        for (i, p) in chain.links.iter().enumerate() {
+            let s = i as f32 * chain.seg_len;
+            if s <= hold + 1e-3 {
+                let expect = ROPE_ANCHOR + swing.dir() * s;
+                assert!((*p - expect).length() < 0.5, "link {i} on the taut line: {p:?} vs {expect:?}");
+            }
+        }
+        let line = sim.rope_polyline(0);
+        assert!(line.iter().any(|p| (*p - sim.pos).length() < 1e-3), "the hand point is on the drawn rope");
+        assert_eq!(line.len(), chain.links.len() + 1, "hand inserted between the links");
+        // The tail hangs from the hand: its first free link is within a segment of it.
+        let first_free = chain.links.iter().position(|_| false).unwrap_or(0).max(
+            (0..chain.links.len()).find(|&i| i as f32 * chain.seg_len > hold + 1e-3).unwrap(),
+        );
+        let d = (chain.links[first_free] - sim.pos).length();
+        assert!(d <= chain.seg_len + 0.5, "first free link {d} from the hand");
+    }
+
+    #[test]
+    fn the_tail_lags_behind_the_swing() {
+        let (mut sim, world) = hanging(120.0);
+        // Start at rest at -50 degrees: the taut part on the line, the tail hanging
+        // straight down from the hand.
+        let angle = -50_f32.to_radians();
+        sim.rope_swings[0] = RopeSwing { angle, ang_vel: 0.0 };
+        let hand = ROPE_ANCHOR + sim.rope_swings[0].dir() * 120.0;
+        {
+            let chain = &mut sim.rope_chains[0];
+            for i in 0..chain.links.len() {
+                let s = i as f32 * chain.seg_len;
+                chain.links[i] = if s <= 120.0 {
+                    ROPE_ANCHOR + Vec2::new(angle.sin(), angle.cos()) * s
+                } else {
+                    hand + Vec2::new(0.0, s - 120.0)
+                };
+                chain.prev[i] = chain.links[i];
+            }
+        }
+        let tail = *chain_of(&sim).links.last().unwrap();
+        assert!((tail.x - hand.x).abs() < 1.0, "tail hangs straight below the hand to begin with");
+
+        // The hand accelerates toward +x; the tail trails behind it.
+        run_for(&mut sim, &world, none(), 0.15);
+        assert!(sim.rope_swing(0).ang_vel > 0.0, "swinging toward +x");
+        let tail = *chain_of(&sim).links.last().unwrap();
+        assert!(tail.x < sim.pos.x - 2.0, "tail x {} should trail the hand x {}", tail.x, sim.pos.x);
+    }
+
+    #[test]
+    fn the_grab_follows_the_chain_not_the_straight_line() {
+        let world = rope_world();
+        let mut sim = Simulation::new(Pos2::new(0.0, 0.0));
+        sim.step(&world, none(), DT);
+        displace_tail(&mut sim, 60.0);
+        let tail = *chain_of(&sim).links.last().unwrap();
+        // Standing where the straight line would be: the rope is 60 px away — no grab.
+        sim.pos = Pos2::new(ROPE_ANCHOR.x, tail.y);
+        sim.vel = Vec2::ZERO;
+        sim.step(&world, UP, DT);
+        assert!(!sim.is_on_rope(), "nothing to grab on the empty straight line");
+        // At the displaced tail, where the rope is drawn: grabbed.
+        let tail = *chain_of(&sim).links.last().unwrap();
+        sim.pos = tail;
+        sim.vel = Vec2::ZERO;
+        sim.step(&world, UP, DT);
+        assert!(sim.is_on_rope(), "grabbed the displaced tail");
+        let (_, hold) = sim.rope_hold().unwrap();
+        assert!((hold - ROPE_LEN).abs() < 1.0, "held at the end of the rope by arc length, got {hold}");
+        assert!(sim.rope_swing(0).angle > 0.05, "the taut line aims at the grabbed point");
+    }
+
+    #[test]
+    fn release_keeps_the_chain_continuous() {
+        let (mut sim, world) = hanging(200.0);
+        sim.rope_swings[0] = RopeSwing { angle: 0.0, ang_vel: 2.5 };
+        run_for(&mut sim, &world, none(), 0.2);
+        let before = chain_of(&sim).links.clone();
+        let jump = Input { jump: true, ..NONE_INPUT };
+        sim.step(&world, jump, DT);
+        assert!(!sim.is_on_rope());
+        let chain = chain_of(&sim);
+        for (a, b) in before.iter().zip(&chain.links) {
+            assert!((*a - *b).length() <= chain.seg_len, "no link jumps more than a segment on release");
+        }
+        assert!(chain.max_speed(DT) > 100.0, "the rope keeps its motion");
+        sim.step(&world, none(), DT);
+        assert!(chain_of(&sim).max_speed(DT) > 100.0, "and keeps moving the step after");
+    }
+
+    #[test]
+    fn the_chain_is_deterministic() {
+        let world = rope_world();
+        let script = [(UP, 0.3), (Input { right: true, ..NONE_INPUT }, 1.0), (Input { jump: true, ..NONE_INPUT }, 0.05), (none(), 1.0)];
+        let mut a = Simulation::new(Pos2::new(ROPE_ANCHOR.x, ROPE_ANCHOR.y + 200.0));
+        let mut b = a.clone();
+        for (input, secs) in script {
+            run_for(&mut a, &world, input, secs);
+            run_for(&mut b, &world, input, secs);
+        }
+        assert_eq!(a.rope_chain(0), b.rope_chain(0));
+        assert_eq!(a.pos, b.pos);
+    }
+
     #[test]
     fn respawn_resets_every_rope_to_hanging_still() {
         let (mut sim, world) = hanging(200.0);
@@ -1122,6 +1510,7 @@ mod tests {
         sim.step(&world, none(), DT);
         assert!(!sim.is_on_rope());
         assert_eq!(sim.rope_swing(0), RopeSwing::default());
+        assert_eq!(sim.rope_chain(0), Some(&RopeChain::hanging(ROPE_ANCHOR, ROPE_LEN)));
     }
 
     #[test]

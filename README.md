@@ -11,7 +11,8 @@ built-in play mode so a level can be tested without leaving the editor.
   - Double-click a polygon to edit it; drag its points; Delete/Backspace to remove one.
 - **Entity placement**: place sprites (coins, orcs, death traps) anywhere in the level.
 - **Ropes**: hang a rope with two clicks (anchor, then bottom end); in play mode the
-  character grabs it, swings, climbs along it and lets go with momentum.
+  character grabs it, swings, climbs along it and lets go with momentum. The rope is a
+  flexible chain: the tail dangles and trails the swing, and a free rope ripples and settles.
 - **Two-axis smooth scrolling**: hold the arrow keys to scroll in any direction; the canvas
   accelerates and glides to a stop.
 - **Explicit level size**: set the level's width and height, drawn as a boundary and saved
