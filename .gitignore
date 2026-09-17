@@ -45,3 +45,11 @@ AGENTS.md
 CLAUDE.md
 .claude/
 .cursor/
+
+# Editor scratch: the default save target of the running editor, and loose test
+# fixtures and scripts that predate `tests/level1_test.rs` (neither Rust file is part
+# of the crate: one is a standalone `fn main()`, the other is declared by no module).
+/level.json
+/test_simple.json
+/test_deserialize.rs
+/src/test_deser.rs
