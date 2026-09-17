@@ -1,0 +1,12 @@
+{
+  "version": 1,
+  "hooks": {
+    "preToolUse": [
+      {
+        "matcher": "create|edit|str_replace_editor|apply_patch",
+        "bash": "node \"/Users/arikha/rust_game_editor/.github/skills/comet/scripts/comet-hook-router.mjs\" --platform \"github-copilot\" --project-root \"/Users/arikha/rust_game_editor\"",
+        "powershell": "node \"/Users/arikha/rust_game_editor/.github/skills/comet/scripts/comet-hook-router.mjs\" --platform \"github-copilot\" --project-root \"/Users/arikha/rust_game_editor\""
+      }
+    ]
+  }
+}
