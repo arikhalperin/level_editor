@@ -96,6 +96,10 @@ struct EditorState {
     /// The single rounded integer-pixel offset shared by every renderer and
     /// mouse->world conversion this frame: `scroll.pixel_offset()`.
     scroll_offset: Vec2,
+    /// The canvas rectangle as it was laid out last frame, excluding the menu bar.
+    /// With `scroll_offset` it gives the visible world region, whose centre is where
+    /// play starts the character. `None` until the first frame has been laid out.
+    canvas_rect: Option<egui::Rect>,
     selected_entity: Option<usize>,
     dragging_entity: bool,
     last_click_time: Option<f64>,
@@ -139,8 +143,9 @@ struct EditorState {
     size_dialog: Option<(String, String)>,
     /// The running play simulation. `None` means the editor is not in play mode.
     play: Option<PlaySession>,
-    /// Where the character spawns: the last canvas click in world space, remembered
-    /// across play sessions so a cleared `last_click_pos` falls back to it.
+    /// Where the character spawns, in world space: the centre of the visible canvas
+    /// when play started, or wherever the canvas was last clicked during play. An
+    /// in-run restart and a death both return the character here.
     play_spawn: Option<Pos2>,
     /// Tool and tool name to restore when play mode ends.
     tool_before_play: Option<(Tool, Option<String>)>,
@@ -178,6 +183,7 @@ impl Default for EditorState {
             background_size: Vec2::ZERO,
             scroll: ScrollModel::default(),
             scroll_offset: Vec2::ZERO,
+            canvas_rect: None,
             selected_entity: None,
             dragging_entity: false,
             last_click_time: None,
@@ -772,11 +778,19 @@ impl EditorState {
             .collect()
     }
 
+    /// The world point at the centre of what is on screen. `None` until a frame has
+    /// been laid out and there is a canvas to take a centre from.
+    fn view_centre(&self) -> Option<Pos2> {
+        self.canvas_rect.map(|r| r.center() + self.scroll_offset)
+    }
+
     fn start_play(&mut self) {
-        // Spawn where the level was last clicked, in world coordinates; if the last
-        // gesture cleared that (finishing a polygon does), reuse the previous spawn.
+        // Spawn at the centre of what is on screen, so trying a spot is a matter of
+        // scrolling until you can see it and pressing play: a click made earlier
+        // somewhere else in the level no longer decides where the run begins. Before
+        // the first frame there is no canvas to measure, so fall back to the last spawn.
         let spawn = self
-            .last_click_pos
+            .view_centre()
             .or(self.play_spawn)
             .unwrap_or(Pos2::new(100.0, 100.0));
         self.play_spawn = Some(spawn);
@@ -790,6 +804,21 @@ impl EditorState {
         self.drawing_rope = None;
         self.play = Some(PlaySession::new(spawn, &self.bitmap_spawns()));
         trace!("play_started spawn={:?}", spawn);
+    }
+
+    /// Move the spawn point to `spawn` (world space) and restart the run there. This is
+    /// what a canvas click does while playing; the level itself is never touched.
+    fn move_play_spawn(&mut self, spawn: Pos2, panel: egui::Rect) {
+        self.play_spawn = Some(spawn);
+        self.last_click_pos = Some(spawn);
+        if let Some(play) = &mut self.play {
+            play.respawn_at(spawn);
+        }
+        // The character just jumped, after this frame's camera update and before it is
+        // drawn. Re-apply the containment bound now so a click near a canvas edge cannot
+        // show it off screen for a frame.
+        self.contain_play_camera(panel);
+        trace!("play_spawn_moved {:?}", spawn);
     }
 
     fn stop_play(&mut self) {
@@ -1516,6 +1545,8 @@ impl eframe::App for EditorState {
         // Minimap (navigation box) mouse navigation. The layout is computed once here,
         // before any click is dispatched, from the same canvas rect the renderer uses.
         let canvas_panel = ctx.available_rect();
+        // Remembered for the next frame's play start, which runs before this point.
+        self.canvas_rect = Some(canvas_panel);
         self.minimap_layout = minimap::layout(canvas_panel, ctx.screen_rect(), self.resolved_level_size());
         self.handle_minimap_pointer(ctx, &pointer, canvas_panel);
 
@@ -1811,17 +1842,7 @@ impl eframe::App for EditorState {
                     // While playing, a canvas click only moves the spawn point; the level
                     // is never touched.
                     if self.play.is_some() && !toolbox_click && !help_click {
-                        let spawn = pos + self.scroll_offset;
-                        self.play_spawn = Some(spawn);
-                        self.last_click_pos = Some(spawn);
-                        if let Some(play) = &mut self.play {
-                            play.respawn_at(spawn);
-                        }
-                        // The character just jumped, after this frame's camera update and
-                        // before it is drawn. Re-apply the containment bound now so a
-                        // click near a canvas edge cannot show it off screen for a frame.
-                        self.contain_play_camera(play_panel);
-                        trace!("play_spawn_moved {:?}", spawn);
+                        self.move_play_spawn(pos + self.scroll_offset, play_panel);
                     } else if !toolbox_click && !help_click {
                         // Adjust position for scroll offset
                         let world_pos = pos + self.scroll_offset;
@@ -2381,5 +2402,169 @@ mod editor_state_tests {
         e.entities.clear();
         e.level_size = Some(Vec2::new(2000.0, 1500.0));
         assert!(e.has_unsaved_changes(), "and so is setting the level size");
+    }
+
+    // ── Play spawns at the centre of the visible view ────────────────────────
+
+    /// An editor whose canvas has been laid out and whose view has been scrolled, as it
+    /// is on any frame after the first. `canvas` is the rectangle the canvas occupies on
+    /// screen, `offset` the scroll offset, so the visible world region is the canvas
+    /// translated by the offset.
+    fn an_editor_looking_at(canvas: egui::Rect, offset: Vec2) -> EditorState {
+        let mut e = EditorState::default();
+        e.entities = vec![a_polygon()];
+        e.level_size = Some(Vec2::new(25600.0, 4000.0));
+        e.canvas_rect = Some(canvas);
+        e.scroll = ScrollModel { offset, velocity: Vec2::ZERO };
+        e.scroll_offset = e.scroll.pixel_offset();
+        e
+    }
+
+    /// A canvas 800x600 sitting under the menu bar, scrolled so it shows world
+    /// x 800..1600 and y 400..1000.
+    fn a_view_of_the_middle_of_the_level() -> EditorState {
+        an_editor_looking_at(
+            egui::Rect::from_min_max(Pos2::new(0.0, 40.0), Pos2::new(800.0, 640.0)),
+            Vec2::new(800.0, 360.0),
+        )
+    }
+
+    #[test]
+    fn play_starts_the_character_at_the_centre_of_the_visible_canvas() {
+        let mut e = a_view_of_the_middle_of_the_level();
+        e.start_play();
+
+        let play = e.play.as_ref().expect("play mode started");
+        assert_eq!(
+            play.player.pos,
+            Pos2::new(1200.0, 700.0),
+            "the character starts at the centre of the world the canvas is showing"
+        );
+        assert_eq!(e.play_spawn, Some(Pos2::new(1200.0, 700.0)), "and that is the spawn point");
+    }
+
+    #[test]
+    fn play_starts_at_the_centre_with_the_view_at_the_level_origin() {
+        let mut e = an_editor_looking_at(
+            egui::Rect::from_min_max(Pos2::ZERO, Pos2::new(800.0, 600.0)),
+            Vec2::ZERO,
+        );
+        e.start_play();
+
+        assert_eq!(
+            e.play.as_ref().expect("play mode started").player.pos,
+            Pos2::new(400.0, 300.0),
+            "an unscrolled view of world 0..800 by 0..600 starts the character in its middle"
+        );
+    }
+
+    #[test]
+    fn the_centre_is_the_canvas_centre_not_the_window_centre() {
+        // The canvas sits below the menu bar. Measuring the whole window instead would
+        // put the spawn 20px high, which is exactly the bug this guards.
+        let mut e = an_editor_looking_at(CANVAS, Vec2::ZERO);
+        e.start_play();
+
+        assert_eq!(
+            e.play.as_ref().expect("play mode started").player.pos,
+            Pos2::new(640.0, 400.0),
+            "the menu bar is not part of the canvas, so it does not pull the centre up"
+        );
+    }
+
+    #[test]
+    fn a_click_made_before_play_no_longer_decides_where_the_run_begins() {
+        let mut e = a_view_of_the_middle_of_the_level();
+        // Clicked at the origin, then scrolled far away so that point is off screen.
+        e.last_click_pos = Some(Pos2::new(50.0, 50.0));
+        e.start_play();
+
+        let pos = e.play.as_ref().expect("play mode started").player.pos;
+        assert_eq!(pos, Pos2::new(1200.0, 700.0), "the view decides, not the stale click");
+        assert_ne!(pos, Pos2::new(50.0, 50.0), "and certainly not a point that is off screen");
+    }
+
+    #[test]
+    fn restarting_the_run_returns_the_character_to_the_view_centre() {
+        let mut e = a_view_of_the_middle_of_the_level();
+        e.start_play();
+        let centre = Pos2::new(1200.0, 700.0);
+
+        let play = e.play.as_mut().expect("play mode started");
+        play.player.pos = Pos2::new(4000.0, 2000.0);
+        play.restart();
+
+        assert_eq!(
+            e.play.as_ref().unwrap().player.pos,
+            centre,
+            "R puts the character back where the run began"
+        );
+    }
+
+    #[test]
+    fn a_click_while_playing_still_moves_the_spawn_and_respawns_there() {
+        let mut e = a_view_of_the_middle_of_the_level();
+        e.start_play();
+
+        let clicked = Pos2::new(900.0, 500.0);
+        e.move_play_spawn(clicked, CANVAS);
+
+        assert_eq!(e.play_spawn, Some(clicked), "the click moved the spawn point");
+        assert_eq!(
+            e.play.as_ref().expect("still playing").player.pos,
+            clicked,
+            "and the character restarted there"
+        );
+    }
+
+    #[test]
+    fn the_play_menu_and_f5_start_in_the_same_place() {
+        // Both go through `toggle_play`, so one run of it stands for both.
+        let mut e = a_view_of_the_middle_of_the_level();
+        e.toggle_play();
+        let first = e.play.as_ref().expect("play mode started").player.pos;
+
+        e.toggle_play();
+        assert!(e.play.is_none(), "the second toggle stops play");
+        e.toggle_play();
+        let second = e.play.as_ref().expect("play mode started again").player.pos;
+
+        assert_eq!(first, Pos2::new(1200.0, 700.0));
+        assert_eq!(second, first, "the same view starts the character in the same place");
+    }
+
+    #[test]
+    fn stopping_play_restores_the_view_it_began_with() {
+        let mut e = a_view_of_the_middle_of_the_level();
+        let before = e.scroll.offset;
+        e.start_play();
+
+        // The camera wanders while the character runs.
+        e.scroll.offset = Vec2::new(9000.0, 1200.0);
+        e.stop_play();
+
+        assert!(e.play.is_none(), "play stopped");
+        assert_eq!(e.scroll.offset, before, "and the editor is looking where it was");
+    }
+
+    #[test]
+    fn without_a_laid_out_canvas_play_falls_back_to_the_last_spawn() {
+        // Before the first frame there is no canvas to take a centre from.
+        let mut e = EditorState::default();
+        e.play_spawn = Some(Pos2::new(120.0, 340.0));
+        e.start_play();
+        assert_eq!(
+            e.play.as_ref().expect("play mode started").player.pos,
+            Pos2::new(120.0, 340.0),
+            "the remembered spawn stands in"
+        );
+
+        let mut blank = EditorState::default();
+        blank.start_play();
+        assert_eq!(
+            blank.play.as_ref().expect("play mode started").player.pos,
+            Pos2::new(100.0, 100.0),
+            "and with nothing remembered the spawn is still defined"
+        );
     }
 }

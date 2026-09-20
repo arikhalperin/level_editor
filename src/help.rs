@@ -116,7 +116,7 @@ impl HelpContent {
             HelpEntry::new(undo_label, "Undo the last change."),
             HelpEntry::new(redo_label, "Redo the last undone change."),
             HelpEntry::new("F1 / ?", "Show or hide this help."),
-            HelpEntry::new("F5", "Start or stop play mode."),
+            HelpEntry::new("F5", "Start or stop play mode. The character starts at the centre of the visible canvas."),
             HelpEntry::new(
                 "R",
                 "Restart the run: character back at the spawn point, orcs and coins restored (play mode).",
@@ -207,7 +207,7 @@ impl HelpContent {
                 "Level \u{2192} Level Size\u{2026}",
                 "Set the level's width and height in pixels; saved with the level.",
             ),
-            HelpEntry::new("Play \u{2192} Play / Stop", "Start or stop play mode (same as F5)."),
+            HelpEntry::new("Play \u{2192} Play / Stop", "Start or stop play mode; the character starts at the centre of the visible canvas (same as F5)."),
             HelpEntry::new("Help \u{2192} Keyboard & Commands", "Show this window."),
         ];
 

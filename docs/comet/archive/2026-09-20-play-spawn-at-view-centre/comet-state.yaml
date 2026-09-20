@@ -1,0 +1,345 @@
+schema: comet.native.v4
+name: play-spawn-at-view-centre
+language: en
+phase: archive
+status: done
+state_version: 8
+brief: brief.md
+shape_confirmation_hash: 0783a3f292b1f8c340de5906f6560b832843ee738b670d2c09671cdf8613f95d
+spec_changes: []
+workspace:
+  isolation: current
+  change_branch: null
+  target_branch: null
+  finish: null
+loop:
+  stage: done
+  goal_cycle: 1
+  iteration: 1
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 0
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: null
+acceptance:
+  - id: A1
+    source: brief.md
+    text: "Scenario: With the view scrolled so the visible canvas covers world x
+      800-1600 and y 400-1000, pressing F5 starts the character at world (1200,
+      700), the centre of that visible area."
+    result: passed
+    reason:
+      text: start_play (main.rs:787-795) takes view_centre(). Test
+        play_starts_the_character_at_the_centre_of_the_visible_canvas
+        (main.rs:2432-2445) uses canvas (0,40)-(800,640) with offset (800,360),
+        giving visible world x 800..1600 and y 400..1000, and asserts spawn
+        (1200,700) and play_spawn == Some((1200,700)). Offsets are integral so
+        pixel_offset()'s round() (scroll.rs:110-112) introduces no drift.
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: "Scenario: With the view at the level origin so the visible canvas covers
+      world x 0-800 and y 0-600, pressing F5 starts the character at world (400,
+      300)."
+    result: passed
+    reason:
+      text: play_starts_at_the_centre_with_the_view_at_the_level_origin
+        (main.rs:2446-2460) asserts (400,300) for canvas (0,0)-(800,600) at zero
+        offset. Verifier noted that fixture's y=0 origin cannot occur in the
+        real app, but the realistic y-axis case is carried by A1's fixture and
+        by the_centre_is_the_canvas_centre_not_the_window_centre
+        (main.rs:2461-2474), which asserts (640,400) against the window-centre
+        answer (640,380).
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: "Scenario: The user clicks the canvas at world (50, 50), scrolls far away
+      so that point is off screen, then presses F5. The character starts at the
+      centre of the new visible area, not at (50, 50)."
+    result: passed
+    reason:
+      text: a_click_made_before_play_no_longer_decides_where_the_run_begins
+        (main.rs:2475-2487) sets last_click_pos=(50,50) and still asserts
+        (1200,700) plus an explicit assert_ne! against (50,50). start_play no
+        longer reads last_click_pos at all; the diff removes it from the spawn
+        chain.
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: "Scenario: After play has started at the view centre, pressing R restarts
+      the run with the character back at that same view-centre point."
+    result: passed
+    reason:
+      text: "restarting_the_run_returns_the_character_to_the_view_centre
+        (main.rs:2488-2503) moves the player to (4000,2000), calls restart(),
+        and asserts return to (1200,700). Chain independently traced:
+        PlaySession::restart -> Simulation::respawn -> respawn_at(self.spawn)
+        (combat.rs:770-774, sim.rs:442-452), spawn set from PlaySession::new at
+        main.rs:804. The R handler (main.rs:1397-1401) calls exactly
+        play.restart()."
+      truncated: false
+  - id: A5
+    source: brief.md
+    text: "Scenario: While playing, a left click on the canvas at a visible point
+      still moves the spawn to that point and respawns the character there."
+    result: passed
+    reason:
+      text: "Extraction verified behaviour-preserving: the removed inline block and
+        move_play_spawn (main.rs:809-822) are line-for-line identical, and the
+        call site (main.rs:1845) passes the same two values under the unchanged
+        guard (main.rs:1843-1845). Effect is covered by
+        a_click_while_playing_still_moves_the_spawn_and_respawns_there
+        (main.rs:2504-2519). Caveat recorded: no test drives a real click
+        through the dispatch path; that half rests on the byte-identical diff."
+      truncated: false
+  - id: A6
+    source: brief.md
+    text: "Scenario: Starting play from the Play menu places the character at the
+      same point that F5 would."
+    result: passed
+    reason:
+      text: Play menu (main.rs:1305-1312) and F5 (main.rs:1390-1392) both call the
+        same toggle_play (main.rs:837-843). Verifier independently confirmed
+        both sites precede the scroll_offset update (main.rs:1426-1428) and the
+        canvas_rect assignment (main.rs:1549), so on any frame both read
+        identical inputs and must yield the identical spawn. The test proves
+        toggle_play determinism; the equality claim rests on that code read.
+      truncated: false
+  - id: A7
+    source: brief.md
+    text: "Scenario: Stopping play restores the editor's scroll position to exactly
+      where it was when play began."
+    result: passed
+    reason:
+      text: stop_play is unchanged by this diff and restores via camera::restore then
+        recomputes scroll_offset (main.rs:824-835); capture/restore are exact
+        copies with velocity zeroed (camera.rs:110-119).
+        stopping_play_restores_the_view_it_began_with (main.rs:2536-2549)
+        wanders the camera to (9000,1200) and asserts the exact pre-play offset
+        returns.
+      truncated: false
+  - id: A8
+    source: brief.md
+    text: "Scenario: When no canvas rectangle has been recorded yet, starting play
+      falls back to the remembered `play_spawn`, and to `(100, 100)` when there
+      is none, so the spawn is always defined."
+    result: passed
+    reason:
+      text: view_centre() returns None when canvas_rect is None (main.rs:783-785) and
+        start_play chains .or(play_spawn).unwrap_or((100,100))
+        (main.rs:792-795).
+        without_a_laid_out_canvas_play_falls_back_to_the_last_spawn
+        (main.rs:2550-2569) covers both branches. canvas_rect defaults to None
+        (main.rs:186) and new_level correctly does not reset it.
+      truncated: false
+builder_handoff:
+  candidate_id: b84a7572-3a46-421c-8360-645ed37d5c3d
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:6775ff01-e78d-427d-8526-7f5d6557bebe
+  iteration: 1
+  summary:
+    text: "start_play now spawns the character at the centre of the visible canvas
+      instead of at last_click_pos. Changes in src/main.rs: (1) new field
+      canvas_rect: Option<egui::Rect>, recorded each frame from the same
+      ctx.available_rect() the minimap and play camera already use, so it
+      excludes the menu bar; (2) new pure helper view_centre() returning
+      canvas_rect.center() + scroll_offset; (3) start_play's spawn chain is now
+      view_centre() -> play_spawn -> (100,100), with last_click_pos removed from
+      it; (4) the click-during-play branch was extracted verbatim into
+      move_play_spawn(spawn, panel) so that behaviour is unit-testable without
+      running update(); it is unchanged. play_spawn is still written at play
+      start, so restart and death respawn return to the view centre. Doc comment
+      on play_spawn corrected, and two help entries (F5, Play menu) now say
+      where the character starts. Nine new tests in editor_state_tests cover all
+      eight acceptance items plus the menu-bar constraint. Mutation-checked:
+      reverting start_play to the old last_click_pos chain fails 6 of the 9 new
+      tests; the 3 that still pass cover behaviour this change deliberately
+      leaves alone (click-during-play respawn, view restore on stop, and the
+      shared fallback chain)."
+    truncated: false
+  addressed_acceptance_ids:
+    - A1
+    - A2
+    - A3
+    - A4
+    - A5
+    - A6
+    - A7
+    - A8
+  checks:
+    - name:
+        text: cargo build
+        truncated: false
+      result: passed
+      note:
+        text: Compiles. 12 warning lines, identical to the pre-change baseline; none
+          reference canvas_rect, view_centre, start_play or move_play_spawn.
+        truncated: false
+    - name:
+        text: cargo test
+        truncated: false
+      result: passed
+      note:
+        text: 201 unit tests plus 1 integration test, 0 failed. Includes the 9 new
+          tests.
+        truncated: false
+    - name:
+        text: mutation check
+        truncated: false
+      result: passed
+      note:
+        text: Reverting the spawn chain to last_click_pos fails 6 of 9 new tests,
+          confirming they discriminate rather than passing vacuously.
+        truncated: false
+    - name:
+        text: manual GUI run
+        truncated: false
+      result: not-run
+      note:
+        text: The editor is an eframe GUI app; play placement was verified through
+          headless unit tests rather than by driving the window.
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: The per-frame recording of canvas_rect lives inside eframe::App::update,
+        which the existing test suite never invokes (no test in this repo
+        constructs an eframe::Frame). That one assignment is therefore covered
+        by reasoning and by the GUI itself, not by an automated test. The value
+        it records is the same ctx.available_rect() already passed to
+        minimap::layout and the play camera on the same line, so a wrong rect
+        there would also break existing minimap and camera behaviour.
+      truncated: false
+    - text: A1 and A2 assert exact world coordinates derived from a synthetic canvas
+        rectangle; they verify the arithmetic, not the real window's layout.
+      truncated: false
+    - text: Acceptance A6 is covered by testing toggle_play, which is the single
+        function both the F5 key handler and the Play menu item call. The two
+        call sites themselves are one-line calls inside update() and are not
+        separately exercised.
+      truncated: false
+  known_limits_truncated: false
+  review: null
+  submitted_at: 2026-09-20T09:34:05.843Z
+blockers: []
+verification:
+  candidate_id: b84a7572-3a46-421c-8360-645ed37d5c3d
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:e1bd44d8-eb81-4e6d-9e1e-cea3fccc22f8
+  iteration: 1
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: pass
+  checks:
+    - id: cargo-build
+      name:
+        text: cargo build
+        truncated: false
+      argv_display:
+        - text: build
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 514
+    - id: cargo-test
+      name:
+        text: cargo test
+        truncated: false
+      argv_display:
+        - text: test
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 3291
+  summary:
+    text: Independent read-only Verifier assessed all 8 acceptance items against the
+      actual implementation and passed 8/8. It re-ran cargo build (exit 0, 10
+      warnings all pre-existing, none touching the new code) and cargo test (201
+      passed, 0 failed) itself, and confirmed via git that 9 tests were added
+      and none removed, with the change confined to src/main.rs (+217/-18) and
+      two strings in src/help.rs. It independently derived the world/screen
+      convention from the click path and renderer rather than trusting the
+      Builder, confirmed the canvas rect genuinely excludes the menu bar because
+      both available_rect() calls sit after the TopBottomPanel and before the
+      CentralPanel, and scrutinised the frame-ordering of canvas_rect, judging
+      the one-frame staleness correct because scroll_offset is stale in the same
+      way. Five non-blocking risks recorded, including an unclamped spawn
+      outside level bounds that predates this change.
+    truncated: false
+  risks:
+    - text: "canvas_rect (assigned main.rs:1549) is one frame stale relative to the
+        play triggers (main.rs:1310, 1390). It is self-consistent because
+        scroll_offset is equally stale, so the pair describes the view the user
+        was looking at when they pressed the key. Residual exposure: a window
+        resize in the same frame as the trigger gives a spawn off by half the
+        resize delta, and F5 on the literal first frame falls back via A8. A
+        more robust form would derive the rect from ctx.screen_rect() minus the
+        already-stored menu_bar_rect (main.rs:1323) before the triggers."
+      truncated: false
+    - text: No test drives the real input path. F5, the Play menu item and the
+        click-during-play are all tested via the methods they call, not through
+        a headless frame. The project already has a headless-egui frame helper
+        (minimap_frame, main.rs:2206-2218), so a stronger test was available.
+        This most affects A5 and A6.
+      truncated: false
+    - text: A2's fixture canvas starts at y=0, a layout the app cannot produce, making
+        it weaker evidence than it appears; the y-axis claim is carried by A1
+        and the menu-bar test.
+      truncated: false
+    - text: The spawn is not clamped to the level bounds (main.rs:787-795). Scrolled
+        past the level edge, Play now drops the character outside the level with
+        nothing beneath them. The previous click-based behaviour had the same
+        exposure and the brief sets no requirement here, so this is a UX
+        question for the user rather than an acceptance failure.
+      truncated: false
+    - text: "The mutation check could not be executed by the read-only Verifier; it
+        instead proved discrimination from the fixture's initial state
+        (EditorState::default() has last_click_pos: None and play_spawn: None,
+        main.rs:189/206), so a reverted implementation would yield (100,100) or
+        (50,50) and fail. The Builder separately observed the red run: 6 of 9
+        new tests failed on the reverted chain."
+      truncated: false
+  risks_truncated: false
+  completed_at: 2026-09-20T09:36:58.175Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: Independent read-only Verifier assessed all 8 acceptance items against the
+        actual implementation and passed 8/8. It re-ran cargo build (exit 0, 10
+        warnings all pre-existing, none touching the new code) and cargo test
+        (201 passed, 0 failed) itself, and confirmed via git that 9 tests were
+        added and none removed, with the change confined to src/main.rs
+        (+217/-18) and two strings in src/help.rs. It independently derived the
+        world/screen convention from the click path and renderer rather than
+        trusting the Builder, confirmed the canvas rect genuinely excludes the
+        menu bar because both available_rect() calls sit after the
+        TopBottomPanel and before the CentralPanel, and scrutinised the
+        frame-ordering of canvas_rect, judging the one-frame staleness correct
+        because scroll_offset is stale in the same way. Five non-blocking risks
+        recorded, including an unclamped spawn outside level bounds that
+        predates this change.
+      truncated: false
+    completed_at: 2026-09-20T09:36:58.175Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: true
+created_at: 2026-09-20T09:28:17.578Z
