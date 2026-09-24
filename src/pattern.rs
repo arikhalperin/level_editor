@@ -4,7 +4,7 @@
 //! state — so the triangulation, the tiling arithmetic and the gallery's recency rules
 //! are all testable headlessly.
 
-use egui::{Pos2, Rect, Vec2};
+use egui::{Pos2, Vec2};
 
 /// How many patterns the gallery remembers before the oldest falls off the end.
 pub const GALLERY_CAPACITY: usize = 12;
@@ -25,31 +25,19 @@ fn signed_area_2(points: &[Pos2]) -> f32 {
     sum
 }
 
-/// The smallest rectangle containing every point. `None` for an empty polygon: there is
-/// no meaningful origin to tile a pattern from.
-pub fn bounding_box(points: &[Pos2]) -> Option<Rect> {
-    let first = *points.first()?;
-    let mut rect = Rect::from_min_max(first, first);
-    for p in points.iter().skip(1) {
-        rect.min.x = rect.min.x.min(p.x);
-        rect.min.y = rect.min.y.min(p.y);
-        rect.max.x = rect.max.x.max(p.x);
-        rect.max.y = rect.max.y.max(p.y);
-    }
-    Some(rect)
-}
-
-/// Where `point` lands on the texture when one texture pixel covers one world pixel and
-/// the tiling starts at `origin`. Values beyond 1 repeat, which is what
+/// Where a world point lands on the texture when one texture pixel covers one world
+/// pixel. Values beyond 1 repeat, and negative ones repeat backwards, which is what
 /// `TextureWrapMode::Repeat` turns into a tiled fill.
-pub fn uv_for(point: Pos2, origin: Pos2, texture_size: Vec2) -> Pos2 {
+///
+/// The tiling is measured from the world origin, so this depends on nothing but the
+/// point and the texture: two polygons meeting at a vertex get the same answer, which is
+/// what makes the pattern continue across their shared edge. A texture with no size has
+/// no meaningful coordinate, so it yields the origin rather than dividing by zero.
+pub fn uv_for(point: Pos2, texture_size: Vec2) -> Pos2 {
     if texture_size.x <= 0.0 || texture_size.y <= 0.0 {
         return Pos2::ZERO;
     }
-    Pos2::new(
-        (point.x - origin.x) / texture_size.x,
-        (point.y - origin.y) / texture_size.y,
-    )
+    Pos2::new(point.x / texture_size.x, point.y / texture_size.y)
 }
 
 /// Which side of the line `o -> a` the point `b` falls on.
@@ -166,10 +154,14 @@ pub fn fill_mesh(points: &[Pos2], texture_size: Vec2, scroll_offset: Vec2) -> Op
     if triangles.is_empty() {
         return None;
     }
-    let bounds = bounding_box(points)?;
+    // Measured from the world origin rather than the shape's own corner, so every
+    // polygon in the level sits on one tiling grid and two blockers that touch continue
+    // the pattern across their shared edge instead of each restarting it. The cost is
+    // that a pattern is fixed to the world: drag a blocker and the shape slides over the
+    // pattern rather than carrying it along.
     let vertices = points
         .iter()
-        .map(|p| (*p - scroll_offset, uv_for(*p, bounds.min, texture_size)))
+        .map(|p| (*p - scroll_offset, uv_for(*p, texture_size)))
         .collect();
     Some(FillMesh { vertices, triangles })
 }
@@ -296,26 +288,102 @@ mod tests {
             .sum()
     }
 
-    #[test]
-    fn a_sixty_four_pixel_pattern_repeats_four_by_two_across_a_256_by_128_shape() {
-        let points = square();
-        let bounds = bounding_box(&points).expect("a square has bounds");
-        let size = Vec2::new(64.0, 64.0);
-
-        assert_eq!(uv_for(points[0], bounds.min, size), Pos2::new(0.0, 0.0), "the origin corner starts the tiling");
-        let far = uv_for(Pos2::new(256.0, 128.0), bounds.min, size);
-        assert_eq!(far.x, 4.0, "256 world pixels over a 64px texture is four tiles across");
-        assert_eq!(far.y, 2.0, "and 128 over 64 is two tiles down");
+    /// The texture coordinates `fill_mesh` produces for `points`, in the polygon's own
+    /// vertex order. The scroll offset is irrelevant to them, so it is zero here.
+    fn uvs(points: &[Pos2], texture: Vec2) -> Vec<Pos2> {
+        fill_mesh(points, texture, Vec2::ZERO)
+            .expect("a real shape with a real texture fills")
+            .vertices
+            .into_iter()
+            .map(|(_, uv)| uv)
+            .collect()
     }
 
     #[test]
-    fn the_tiling_is_anchored_to_the_shape_not_the_world_origin() {
-        // The same shape moved across the level keeps its pattern aligned to itself.
+    fn a_texture_with_no_size_has_no_meaningful_coordinate() {
+        // fill_mesh refuses such a texture before reaching here, but uv_for is public
+        // and must not divide by zero for anyone who calls it directly.
+        assert_eq!(uv_for(Pos2::new(100.0, 100.0), Vec2::ZERO), Pos2::ZERO);
+        assert_eq!(uv_for(Pos2::new(100.0, 100.0), Vec2::new(64.0, 0.0)), Pos2::ZERO);
+        assert_eq!(uv_for(Pos2::new(100.0, 100.0), Vec2::new(-64.0, 64.0)), Pos2::ZERO);
+    }
+
+    #[test]
+    fn a_world_point_maps_to_the_same_coordinate_whichever_polygon_asks() {
+        // The property the whole change rests on, stated directly rather than only
+        // through two shapes that happen to meet.
+        let texture = Vec2::new(64.0, 64.0);
+        let shared_corner = Pos2::new(256.0, 128.0);
+        assert_eq!(uv_for(shared_corner, texture), Pos2::new(4.0, 2.0));
+        assert_eq!(
+            uv_for(shared_corner, texture),
+            uv_for(shared_corner, texture),
+            "a world point's texture coordinate depends on nothing else"
+        );
+    }
+
+    #[test]
+    fn a_sixty_four_pixel_pattern_repeats_four_by_two_across_a_256_by_128_shape() {
+        // A shape whose corner sits on the world origin is the one case where world
+        // anchoring and shape anchoring agree, so this is also a regression guard.
+        let uv = uvs(&square(), Vec2::new(64.0, 64.0));
+
+        assert_eq!(uv[0], Pos2::new(0.0, 0.0), "the corner at the world origin starts the tiling");
+        assert_eq!(uv[2].x, 4.0, "256 world pixels over a 64px texture is four tiles across");
+        assert_eq!(uv[2].y, 2.0, "and 128 over 64 is two tiles down");
+    }
+
+    #[test]
+    fn the_tiling_is_measured_from_the_world_not_the_shapes_own_corner() {
         let moved: Vec<Pos2> = square().iter().map(|p| *p + Vec2::new(1000.0, 500.0)).collect();
-        let bounds = bounding_box(&moved).expect("bounds");
-        let size = Vec2::new(64.0, 64.0);
-        assert_eq!(uv_for(moved[0], bounds.min, size), Pos2::new(0.0, 0.0));
-        assert_eq!(uv_for(moved[2], bounds.min, size), Pos2::new(4.0, 2.0));
+        let uv = uvs(&moved, Vec2::new(64.0, 64.0));
+
+        assert_eq!(
+            uv[0],
+            Pos2::new(1000.0 / 64.0, 500.0 / 64.0),
+            "a shape away from the origin starts partway through a tile, not at (0, 0)"
+        );
+        assert_ne!(uv[0], Pos2::new(0.0, 0.0), "which is exactly what shape anchoring would give");
+    }
+
+    #[test]
+    fn two_blockers_sharing_an_edge_continue_the_pattern_across_it() {
+        // The whole point: side by side, they must read as one surface.
+        let texture = Vec2::new(64.0, 64.0);
+        let left = vec![
+            Pos2::new(0.0, 0.0),
+            Pos2::new(256.0, 0.0),
+            Pos2::new(256.0, 128.0),
+            Pos2::new(0.0, 128.0),
+        ];
+        let right: Vec<Pos2> = left.iter().map(|p| *p + Vec2::new(256.0, 0.0)).collect();
+
+        let left_uv = uvs(&left, texture);
+        let right_uv = uvs(&right, texture);
+
+        // The shared edge is x = 256: the left shape's second corner and the right
+        // shape's first. Both must land on the same place in the texture.
+        assert_eq!(left_uv[1].x, 4.0, "the left blocker reaches the seam four tiles along");
+        assert_eq!(
+            right_uv[0], left_uv[1],
+            "and the right blocker starts there, so the pattern runs straight through"
+        );
+        assert_eq!(right_uv[1].x, 8.0, "continuing to eight tiles at its far edge");
+    }
+
+    #[test]
+    fn moving_a_blocker_slides_it_over_a_pattern_fixed_to_the_world() {
+        // The accepted cost of neighbours lining up, asserted so it cannot change
+        // unnoticed: the pattern belongs to the level, not to the shape.
+        let texture = Vec2::new(64.0, 64.0);
+        let before = uvs(&square(), texture);
+        let after = uvs(
+            &square().iter().map(|p| *p + Vec2::new(32.0, 0.0)).collect::<Vec<_>>(),
+            texture,
+        );
+
+        assert_ne!(before[0], after[0], "the shape moved, so it shows a different part of the pattern");
+        assert_eq!(after[0], Pos2::new(0.5, 0.0), "half a tile along, because it moved half a tile");
     }
 
     #[test]
@@ -375,7 +443,12 @@ mod tests {
         assert_eq!(fill.triangles.len(), 2, "a quad is two triangles");
         // Screen position follows the editor's world = screen + scroll_offset rule.
         assert_eq!(fill.vertices[0].0, Pos2::new(-100.0, -50.0), "scrolled into screen space");
-        assert_eq!(fill.vertices[0].1, Pos2::new(0.0, 0.0), "but the texture is anchored to the shape");
+        assert_eq!(
+            fill.vertices[0].1,
+            Pos2::new(0.0, 0.0),
+            "while the texture coordinate ignores the scroll entirely, so the pattern \
+             stays put in the level instead of swimming as the view moves"
+        );
         assert_eq!(fill.vertices[2].1, Pos2::new(4.0, 2.0));
     }
 
