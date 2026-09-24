@@ -207,6 +207,18 @@ impl HelpContent {
                 "Level \u{2192} Level Size\u{2026}",
                 "Set the level's width and height in pixels; saved with the level.",
             ),
+            HelpEntry::new(
+                "Level \u{2192} Blocker Pattern\u{2026}",
+                "Fill the selected polygon with an image from disk, tiled at its own size. Saved with the level.",
+            ),
+            HelpEntry::new(
+                "Level \u{2192} Clear Pattern",
+                "Remove the pattern from the selected polygon, leaving it drawn as an outline again.",
+            ),
+            HelpEntry::new(
+                "Level \u{2192} Patterns\u{2026}",
+                "Show the twelve patterns used most recently; click one to apply it to the selected polygon.",
+            ),
             HelpEntry::new("Play \u{2192} Play / Stop", "Start or stop play mode; the character starts at the centre of the visible canvas (same as F5)."),
             HelpEntry::new("Help \u{2192} Keyboard & Commands", "Show this window."),
         ];
@@ -358,6 +370,9 @@ mod tests {
                 "File → Save Level",
                 "File → Exit",
                 "Level → Level Size…",
+                "Level → Blocker Pattern…",
+                "Level → Clear Pattern",
+                "Level → Patterns…",
                 "Play → Play / Stop",
                 "Help → Keyboard & Commands",
             ],

@@ -56,6 +56,10 @@ pub enum LevelEntity {
         /// Optional color in hex format (e.g., "#FF0000")
         #[serde(default)]
         color: Option<String>,
+        /// Optional path to an image tiled across the polygon. Absent in files written
+        /// before patterns existed, which therefore load with no pattern.
+        #[serde(default)]
+        pattern: Option<String>,
     },
 }
 
@@ -104,5 +108,68 @@ mod tests {
     #[test]
     fn default_has_no_level_size() {
         assert_eq!(LevelData::default().level_size, None);
+    }
+
+    #[test]
+    fn a_polygon_pattern_survives_the_round_trip() {
+        let data = LevelData {
+            entities: vec![LevelEntity::Polygon {
+                vertices: vec![[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+                polygon_type: Some("blocker_tool".to_string()),
+                color: Some("#FFFF00".to_string()),
+                pattern: Some("/tmp/bricks.png".to_string()),
+            }],
+            ..LevelData::default()
+        };
+
+        let json = serde_json::to_string(&data).expect("serialises");
+        let back: LevelData = serde_json::from_str(&json).expect("deserialises");
+
+        match &back.entities[0] {
+            LevelEntity::Polygon { pattern, color, polygon_type, .. } => {
+                assert_eq!(pattern.as_deref(), Some("/tmp/bricks.png"), "the pattern came back");
+                assert_eq!(color.as_deref(), Some("#FFFF00"), "and did not disturb the colour");
+                assert_eq!(polygon_type.as_deref(), Some("blocker_tool"));
+            }
+            other => panic!("expected a polygon, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn a_polygon_written_before_patterns_existed_loads_with_none() {
+        // Exactly the shape written before this field existed: no `pattern` key at all.
+        let json = r##"{
+            "version": "1.0",
+            "background": null,
+            "background_size": null,
+            "entities": [
+                {
+                    "type": "polygon",
+                    "vertices": [[0.0, 0.0], [10.0, 0.0], [10.0, 10.0]],
+                    "polygon_type": "blocker_tool",
+                    "color": "#FFFF00"
+                }
+            ]
+        }"##;
+        let data: LevelData = serde_json::from_str(json).expect("older files must still load");
+        match &data.entities[0] {
+            LevelEntity::Polygon { pattern, color, .. } => {
+                assert_eq!(*pattern, None, "a missing key means no pattern");
+                assert_eq!(color.as_deref(), Some("#FFFF00"), "everything else is unaffected");
+            }
+            other => panic!("expected a polygon, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn an_explicit_null_pattern_loads_as_none() {
+        let json = r#"{"version":"1.0","background":null,"background_size":null,"entities":[
+            {"type":"polygon","vertices":[[0.0,0.0],[1.0,0.0],[1.0,1.0]],
+             "polygon_type":"blocker_tool","color":null,"pattern":null}]}"#;
+        let data: LevelData = serde_json::from_str(json).expect("null must be accepted");
+        match &data.entities[0] {
+            LevelEntity::Polygon { pattern, .. } => assert_eq!(*pattern, None),
+            other => panic!("expected a polygon, got {other:?}"),
+        }
     }
 }

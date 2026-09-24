@@ -39,6 +39,9 @@ use combat::{BitmapSpawn, PlayInput, PlaySession};
 mod entities;
 use entities::{Entity, DrawableEntity, RopeEntity, RopePlacement, ROPE_COLOR};
 
+mod pattern;
+use pattern::Gallery;
+
 mod debug_export;
 use debug_export::{write_minimap_debug_json, MinimapDebugSnapshot};
 
@@ -89,6 +92,19 @@ struct EditorState {
     loaded_textures: HashMap<String, egui::TextureHandle>,
     bitmap_sizes: HashMap<String, Vec2>,
     bitmap_textures: HashMap<String, egui::TextureHandle>,
+    /// Pattern images keyed by the path they were loaded from. A `None` value records a
+    /// path that could not be read or decoded, so a broken pattern is attempted once
+    /// rather than on every frame.
+    pattern_textures: HashMap<String, Option<egui::TextureHandle>>,
+    /// The patterns used most recently. Editor preference state: it is saved beside the
+    /// last background and level, never in a level file.
+    gallery: Gallery,
+    /// Whether the Patterns window is open, and its rectangle while it is.
+    gallery_open: bool,
+    gallery_rect: Option<egui::Rect>,
+    /// Where editor preferences are read and written. `None` means the real per-user
+    /// config file; tests point it at a temporary file so they cannot disturb it.
+    config_path_override: Option<std::path::PathBuf>,
     background_controller: BackgroundImageController,
     background_size: Vec2,
     /// Continuous scroll state (offset + momentum), advanced once per frame.
@@ -179,6 +195,11 @@ impl Default for EditorState {
             loaded_textures: HashMap::new(),
             bitmap_sizes: HashMap::new(),
             bitmap_textures: HashMap::new(),
+            pattern_textures: HashMap::new(),
+            gallery: Gallery::default(),
+            gallery_open: false,
+            gallery_rect: None,
+            config_path_override: None,
             background_controller: BackgroundImageController::new(),
             background_size: Vec2::ZERO,
             scroll: ScrollModel::default(),
@@ -295,6 +316,220 @@ impl EditorState {
         }
     }
     
+    // ── Blocker patterns ─────────────────────────────────────────────────────
+
+    /// True when there is a polygon to put a pattern on: one is selected, and play mode
+    /// is not running (play never edits the level). Drives both `Level` menu items and
+    /// the gallery's thumbnails, so they cannot disagree about when they are available.
+    fn can_set_pattern(&self) -> bool {
+        self.play.is_none()
+            && self
+                .selected_entity
+                .and_then(|idx| self.entities.get(idx))
+                .is_some_and(|e| e.as_polygon().is_some())
+    }
+
+    /// The pattern on the selected polygon, if it is a polygon and has one.
+    fn selected_pattern(&self) -> Option<&str> {
+        self.selected_entity
+            .and_then(|idx| self.entities.get(idx))
+            .and_then(|e| e.as_polygon())
+            .and_then(|p| p.pattern.as_deref())
+    }
+
+    /// Put `pattern` on the selected polygon, or take it off when `None`. Undoable, and
+    /// remembers the choice in the gallery so it can be reapplied with one click.
+    fn apply_pattern(&mut self, pattern: Option<String>) {
+        if !self.can_set_pattern() {
+            return;
+        }
+        let Some(idx) = self.selected_entity else { return };
+        self.save_state();
+        if let Some(Entity::Polygon(polygon)) = self.entities.get_mut(idx) {
+            polygon.pattern = pattern.clone();
+        }
+        if let Some(path) = pattern {
+            self.gallery.remember(path.clone());
+            self.save_gallery();
+            trace!("pattern_set entity={} path={}", idx, path);
+        } else {
+            trace!("pattern_cleared entity={}", idx);
+        }
+    }
+
+    /// Ask for an image and put it on the selected polygon.
+    fn choose_pattern(&mut self) {
+        if let Some(path) = rfd::FileDialog::new()
+            .add_filter("Image", &["png", "jpg", "jpeg", "bmp", "gif"])
+            .pick_file()
+        {
+            self.apply_pattern(Some(path.to_string_lossy().to_string()));
+        }
+    }
+
+    /// Drop remembered patterns that `can_show` rejects, persisting the gallery only
+    /// when that changed anything, so an unchanged gallery is not rewritten every frame.
+    ///
+    /// Callers pass a test for the file still being there, never for it decoding: an
+    /// image that will not decode this moment keeps its place, because forgetting it is
+    /// not undoable. This is a narrower promise than it may look. `exists()` cannot tell
+    /// a deleted file from one on an unmounted volume, so a launch taken while that
+    /// volume is away still drops those entries, here or in `load_gallery`, and the next
+    /// save writes the shorter list. Protecting against that would mean remembering why
+    /// a path failed, which the gallery deliberately does not do.
+    ///
+    /// Returns whether the gallery changed.
+    fn prune_unshowable(&mut self, can_show: impl Fn(&str) -> bool) -> bool {
+        let before = self.gallery.entries().len();
+        self.gallery.retain_existing(can_show);
+        let changed = self.gallery.entries().len() != before;
+        if changed {
+            trace!("gallery_pruned remaining={}", self.gallery.entries().len());
+            self.save_gallery();
+        }
+        changed
+    }
+
+    /// Which remembered patterns the window actually draws, from each one paired with
+    /// whatever its image resolved to.
+    ///
+    /// The test is the file still being there, and nothing else. That is deliberately
+    /// the same predicate `prune_unshowable` keeps by, so the strip and the gallery can
+    /// never disagree: a pattern whose file has gone is dropped from both in the same
+    /// pass, even if its texture happens to still be in the session cache from before it
+    /// was deleted. One still on disk keeps its slot whether or not it decoded, so the
+    /// strip never has a gap the user cannot account for.
+    fn gallery_strip<T>(
+        resolved: Vec<(String, Option<T>)>,
+        exists: impl Fn(&str) -> bool,
+    ) -> Vec<(String, Option<T>)> {
+        resolved.into_iter().filter(|(path, _)| exists(path)).collect()
+    }
+
+    /// Where preferences live for this editor: the per-user config file, unless a test
+    /// has redirected it.
+    fn config_file_path(&self) -> std::path::PathBuf {
+        self.config_path_override
+            .clone()
+            .unwrap_or_else(Self::get_config_file_path)
+    }
+
+    /// The gallery recorded in a config document. A config with no `recent_patterns`
+    /// key, or one holding something other than a list of strings, yields an empty
+    /// gallery rather than an error.
+    fn gallery_from_config(config: &serde_json::Value) -> Gallery {
+        let Some(list) = config.get("recent_patterns").and_then(|v| v.as_array()) else {
+            return Gallery::default();
+        };
+        Gallery::from_paths(
+            list.iter()
+                .filter_map(|v| v.as_str().map(str::to_string))
+                .collect::<Vec<String>>(),
+        )
+    }
+
+    /// `config` with the gallery written into it. Every other key is left exactly as it
+    /// was, so the editor's own `last_background` and `last_level` survive, and so does
+    /// anything else that happens to share the file.
+    fn config_with_gallery(mut config: serde_json::Value, gallery: &Gallery) -> serde_json::Value {
+        if !config.is_object() {
+            config = serde_json::json!({});
+        }
+        config["recent_patterns"] = serde_json::Value::Array(
+            gallery
+                .entries()
+                .iter()
+                .map(|p| serde_json::Value::String(p.clone()))
+                .collect(),
+        );
+        config
+    }
+
+    /// The gallery as stored in the editor's config file, dropping any pattern whose
+    /// file has since gone so a dead entry cannot be offered.
+    fn load_gallery(&mut self) {
+        let config_path = self.config_file_path();
+        let Ok(content) = std::fs::read_to_string(&config_path) else { return };
+        let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) else { return };
+        self.gallery = Self::gallery_from_config(&config);
+        self.gallery
+            .retain_existing(|p| std::path::Path::new(p).exists());
+        trace!("gallery_loaded count={}", self.gallery.entries().len());
+    }
+
+    /// Write the gallery back, leaving every other key in the config untouched.
+    fn save_gallery(&self) {
+        let config_path = self.config_file_path();
+        let config = if let Ok(content) = std::fs::read_to_string(&config_path) {
+            serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
+        } else {
+            serde_json::json!({})
+        };
+        let config = Self::config_with_gallery(config, &self.gallery);
+
+        if let Ok(json) = serde_json::to_string_pretty(&config) {
+            let _ = std::fs::write(&config_path, json);
+            trace!("gallery_saved count={}", self.gallery.entries().len());
+        }
+    }
+
+    /// The texture for `path`, decoding it on first use. `None` once a path has failed,
+    /// which is remembered so a missing image is not retried every frame.
+    fn pattern_texture(&mut self, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
+        if let Some(cached) = self.pattern_textures.get(path) {
+            return cached.clone();
+        }
+        let loaded = image::open(path).ok().map(|img| {
+            let rgba = img.to_rgba8();
+            let size = [rgba.width() as usize, rgba.height() as usize];
+            let pixels: Vec<Color32> = rgba
+                .pixels()
+                .map(|c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
+                .collect();
+            let image_data = egui::ImageData::Color(egui::ColorImage { size, pixels }.into());
+            // Repeat is what turns texture coordinates beyond 1 into a tiled fill.
+            let options = egui::TextureOptions {
+                wrap_mode: egui::TextureWrapMode::Repeat,
+                ..Default::default()
+            };
+            ctx.load_texture(format!("pattern_{path}"), image_data, options)
+        });
+        if loaded.is_none() {
+            trace!("pattern_texture_failed path={}", path);
+        }
+        self.pattern_textures.insert(path.to_string(), loaded.clone());
+        loaded
+    }
+
+    /// The fill for `polygon`, or `None` when it has no pattern, its image could not be
+    /// decoded, or its outline encloses nothing. Everything the drawing needs, decided
+    /// without a painter, so the decision is testable on its own.
+    fn pattern_fill(
+        &self,
+        polygon: &entities::PolygonEntity,
+    ) -> Option<(egui::TextureId, pattern::FillMesh)> {
+        let path = polygon.pattern.as_deref()?;
+        // Preloaded before the draw loop, exactly as bitmap textures are. A path that
+        // failed to decode is cached as `None`, and falls out here.
+        let texture = self.pattern_textures.get(path)?.as_ref()?;
+        let mesh = pattern::fill_mesh(&polygon.points, texture.size_vec2(), self.scroll_offset)?;
+        Some((texture.id(), mesh))
+    }
+
+    fn draw_polygon_pattern(&self, painter: &egui::Painter, polygon: &entities::PolygonEntity) {
+        let Some((texture_id, fill)) = self.pattern_fill(polygon) else { return };
+        let mut mesh = egui::Mesh::with_texture(texture_id);
+        for (pos, uv) in fill.vertices {
+            mesh.vertices.push(egui::epaint::Vertex { pos, uv, color: Color32::WHITE });
+        }
+        for [a, b, c] in fill.triangles {
+            mesh.indices.push(a as u32);
+            mesh.indices.push(b as u32);
+            mesh.indices.push(c as u32);
+        }
+        painter.add(egui::Shape::mesh(mesh));
+    }
+
     fn compute_entities_hash(&self) -> u64 {
         new_level::level_hash(&self.entities, self.level_size)
     }
@@ -619,15 +854,16 @@ impl EditorState {
         Ok(())
     }
 
-    /// True when `pos` is inside a floating panel (help window or Level Size dialog),
-    /// whose clicks belong to that panel and must not reach the canvas beneath.
-    /// True when `pos` is inside a floating panel (help window or Level Size dialog).
-    /// The Level Size dialog is modal: while it is open nothing reaches the canvas. Its
-    /// rect (and the help window's) is kept for one frame after closing so the very
-    /// click that pressed OK / Cancel / the close button cannot fall through.
+    /// True when `pos` is inside a floating panel — the help window, the Level Size
+    /// dialog or the Patterns window — whose clicks belong to that panel and must not
+    /// reach the canvas beneath.
+    ///
+    /// The Level Size dialog is modal: while it is open nothing reaches the canvas. Each
+    /// rect is kept for one frame after closing, so the very click that pressed OK,
+    /// Cancel or the close button cannot fall through to the level.
     fn pointer_over_panels(&self, pos: Pos2) -> bool {
         self.size_dialog.is_some()
-            || [self.help_rect, self.size_dialog_rect]
+            || [self.help_rect, self.size_dialog_rect, self.gallery_rect]
                 .iter()
                 .flatten()
                 .any(|rect| rect.contains(pos))
@@ -1072,6 +1308,122 @@ impl EditorState {
         }
     }
 
+    /// Draw the Patterns window: the patterns used most recently, newest first, as
+    /// thumbnails that apply themselves to the selected polygon. Non-modal, like the
+    /// help window. Its rectangle is remembered so a click on a thumbnail cannot also
+    /// land on the canvas behind it.
+    fn render_gallery_window(&mut self, ctx: &egui::Context) {
+        if !self.gallery_open {
+            self.gallery_rect = None;
+            return;
+        }
+
+        // Resolve the textures first: the window closure borrows `self` immutably, so
+        // the cache cannot be filled from inside it.
+        //
+        // Two different failures, deliberately treated differently. A pattern whose file
+        // has gone is not drawn and is pruned below. One whose file is still there but
+        // will not decode keeps both its place in the gallery and a slot in the strip,
+        // drawn as a placeholder that names it: forgetting it is not undoable, and a
+        // silently missing tile would leave the user counting eleven thumbnails for
+        // twelve remembered patterns with nothing to explain the gap.
+        let entries: Vec<String> = self.gallery.entries().to_vec();
+        let mut resolved: Vec<(String, Option<egui::TextureHandle>)> =
+            Vec::with_capacity(entries.len());
+        for path in entries {
+            let texture = self.pattern_texture(ctx, &path);
+            resolved.push((path, texture));
+        }
+        // Decided once and shared: stat-ing every entry twice a frame is wasteful, and
+        // two separate passes could in principle see the filesystem differently.
+        let present: std::collections::HashSet<String> = resolved
+            .iter()
+            .filter(|(path, _)| std::path::Path::new(path).exists())
+            .map(|(path, _)| path.clone())
+            .collect();
+        let thumbs = Self::gallery_strip(resolved, |p| present.contains(p));
+        self.prune_unshowable(|p| present.contains(p));
+
+        let can = self.can_set_pattern();
+        let nothing_remembered = self.gallery.is_empty();
+        let current = self.selected_pattern().map(str::to_string);
+
+        let mut open = self.gallery_open;
+        let mut chosen: Option<String> = None;
+        let mut browse = false;
+
+        let response = egui::Window::new("Patterns")
+            .open(&mut open)
+            .resizable(true)
+            .collapsible(false)
+            .default_width(360.0)
+            .show(ctx, |ui| {
+                if nothing_remembered {
+                    ui.label("No patterns used yet.");
+                } else if !can {
+                    ui.label("Select a blocker or other polygon to apply a pattern.");
+                }
+                ui.horizontal_wrapped(|ui| {
+                    for (path, tex) in &thumbs {
+                        let name = std::path::Path::new(path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| path.clone());
+                        let is_current = current.as_deref() == Some(path.as_str());
+                        let widget = match tex {
+                            Some(tex) => {
+                                let image = egui::Image::new((tex.id(), egui::vec2(64.0, 64.0)))
+                                    .fit_to_exact_size(egui::vec2(64.0, 64.0));
+                                let widget = ui.add_enabled(
+                                    can,
+                                    egui::ImageButton::new(image).selected(is_current),
+                                );
+                                if can {
+                                    widget.on_hover_text(&name)
+                                } else {
+                                    widget.on_disabled_hover_text("Select a polygon first.")
+                                }
+                            }
+                            // Still on disk, but unreadable. Shown and never applicable,
+                            // so the slot is accounted for rather than silently empty.
+                            None => ui
+                                .add_enabled(
+                                    false,
+                                    egui::Button::new(&name).min_size(egui::vec2(64.0, 64.0)),
+                                )
+                                .on_disabled_hover_text(format!("{name} could not be read.")),
+                        };
+                        if widget.clicked() {
+                            chosen = Some(path.clone());
+                        }
+                    }
+                });
+                ui.separator();
+                if ui
+                    .add_enabled(can, egui::Button::new("Browse\u{2026}"))
+                    .on_disabled_hover_text("Select a polygon first.")
+                    .clicked()
+                {
+                    browse = true;
+                }
+            });
+
+        self.gallery_rect = response.map(|r| r.response.rect);
+        self.gallery_open = open;
+        if !open {
+            // Keep the rect for this frame so the close-button click is absorbed.
+            trace!("gallery_closed");
+        }
+
+        if let Some(path) = chosen {
+            self.ui_consumed_click = true;
+            self.apply_pattern(Some(path));
+        } else if browse {
+            self.ui_consumed_click = true;
+            self.choose_pattern();
+        }
+    }
+
     /// Draw the Keyboard & Commands window. Non-modal: the canvas, toolbox and every
     /// shortcut keep working while it is open.
     fn render_help_window(&mut self, ctx: &egui::Context) {
@@ -1235,6 +1587,7 @@ impl eframe::App for EditorState {
             self.initial_load_done = true;
             self.load_last_background_path();
             self.load_last_level_path();
+            self.load_gallery();
         }
 
         trace!("update_menu_bar_start");
@@ -1301,6 +1654,48 @@ impl eframe::App for EditorState {
                         self.size_dialog = Some((size.x.to_string(), size.y.to_string()));
                         trace!("menu_level_size_clicked current={:?}", size);
                     }
+                    ui.separator();
+
+                    // Both pattern items need a polygon selected and play stopped; the
+                    // hover text says which, so a greyed item is never a mystery.
+                    let can = self.can_set_pattern();
+                    let why = if self.play.is_some() {
+                        "The level is never changed while playing."
+                    } else {
+                        "Select a blocker or other polygon first."
+                    };
+
+                    if ui
+                        .add_enabled(can, egui::Button::new("Blocker Pattern\u{2026}"))
+                        .on_disabled_hover_text(why)
+                        .clicked()
+                    {
+                        self.ui_consumed_click = true;
+                        ui.close_menu();
+                        self.choose_pattern();
+                    }
+
+                    let has_pattern = self.selected_pattern().is_some();
+                    if ui
+                        .add_enabled(can && has_pattern, egui::Button::new("Clear Pattern"))
+                        .on_disabled_hover_text(if can {
+                            "The selected polygon has no pattern."
+                        } else {
+                            why
+                        })
+                        .clicked()
+                    {
+                        self.ui_consumed_click = true;
+                        ui.close_menu();
+                        self.apply_pattern(None);
+                    }
+
+                    if ui.button("Patterns\u{2026}").clicked() {
+                        self.ui_consumed_click = true;
+                        ui.close_menu();
+                        self.gallery_open = true;
+                        trace!("menu_patterns_clicked");
+                    }
                 });
                 ui.menu_button("Play", |ui| {
                     let label = if self.play.is_some() { "Stop" } else { "Play" };
@@ -1323,6 +1718,7 @@ impl eframe::App for EditorState {
         self.menu_bar_rect = Some(menu_bar.response.rect);
 
         self.render_help_window(ctx);
+        self.render_gallery_window(ctx);
         self.render_size_dialog(ctx);
         
         // Handle exit with unsaved changes prompt
@@ -1735,6 +2131,14 @@ impl eframe::App for EditorState {
                 self.load_bitmap_texture(ctx, &name);
             }
 
+            // And the pattern images, so the draw loop below only reads the cache.
+            let pattern_paths: Vec<String> = self.entities.iter()
+                .filter_map(|e| e.as_polygon().and_then(|p| p.pattern.clone()))
+                .collect();
+            for path in pattern_paths {
+                self.pattern_texture(ctx, &path);
+            }
+
             // Draw all entities
             let mut rope_idx = 0;
             for (idx, entity) in self.entities.iter().enumerate() {
@@ -1783,6 +2187,11 @@ impl eframe::App for EditorState {
                         }
                     }
                 } else {
+                    // A patterned polygon is filled first; the outline and vertex dots
+                    // are then drawn over it, unchanged.
+                    if let Some(polygon) = entity.as_polygon() {
+                        self.draw_polygon_pattern(painter, polygon);
+                    }
                     // For polygon entities, use the trait method
                     entity.draw(painter, self.scroll_offset, is_selected);
                     
@@ -2566,5 +2975,417 @@ mod editor_state_tests {
             Pos2::new(100.0, 100.0),
             "and with nothing remembered the spawn is still defined"
         );
+    }
+
+    // ── Blocker patterns and the gallery ─────────────────────────────────────
+
+    fn a_blocker() -> Entity {
+        Entity::new_polygon_with_type_and_color(
+            vec![
+                Pos2::new(0.0, 0.0),
+                Pos2::new(256.0, 0.0),
+                Pos2::new(256.0, 128.0),
+                Pos2::new(0.0, 128.0),
+            ],
+            "blocker_tool".to_string(),
+            Some("#FFFF00".to_string()),
+        )
+    }
+
+    /// An editor holding two blockers, the first selected, with preferences redirected
+    /// to a temporary file so no test can disturb the real one.
+    fn an_editor_with_a_blocker_selected() -> EditorState {
+        let mut e = EditorState::default();
+        e.entities = vec![a_blocker(), a_blocker()];
+        e.selected_entity = Some(0);
+        e.config_path_override = Some(a_temp_config_path());
+        e.last_save_hash = e.compute_entities_hash();
+        e
+    }
+
+    fn a_temp_config_path() -> std::path::PathBuf {
+        // Unique per call, so tests cannot collide with each other.
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        std::env::temp_dir().join(format!("level_editor_test_config_{unique}_{:?}.json", std::thread::current().id()))
+    }
+
+    fn pattern_of(e: &EditorState, idx: usize) -> Option<String> {
+        e.entities[idx].as_polygon().and_then(|p| p.pattern.clone())
+    }
+
+    #[test]
+    fn choosing_a_pattern_puts_it_on_the_selected_blocker_alone() {
+        let mut e = an_editor_with_a_blocker_selected();
+        e.apply_pattern(Some("/tmp/bricks.png".to_string()));
+
+        assert_eq!(pattern_of(&e, 0).as_deref(), Some("/tmp/bricks.png"), "the selected blocker");
+        assert_eq!(pattern_of(&e, 1), None, "and nothing else in the level");
+        let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    #[test]
+    fn an_unpatterned_polygon_is_drawn_with_no_fill_at_all() {
+        let e = an_editor_with_a_blocker_selected();
+        let polygon = e.entities[0].as_polygon().expect("a polygon");
+        assert_eq!(polygon.pattern, None, "this one has no pattern");
+        assert!(
+            e.pattern_fill(polygon).is_none(),
+            "so nothing is filled and only the outline is drawn, exactly as before"
+        );
+    }
+
+    #[test]
+    fn a_pattern_whose_image_will_not_load_falls_back_to_the_bare_outline() {
+        let mut e = an_editor_with_a_blocker_selected();
+        e.apply_pattern(Some("/nowhere/missing.png".to_string()));
+        // The draw loop caches a failed decode as `None` so it is not retried each frame.
+        e.pattern_textures.insert("/nowhere/missing.png".to_string(), None);
+
+        let polygon = e.entities[0].as_polygon().expect("a polygon");
+        assert_eq!(polygon.pattern.as_deref(), Some("/nowhere/missing.png"), "the path is kept");
+        assert!(e.pattern_fill(polygon).is_none(), "but nothing is filled, and nothing panics");
+        let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    #[test]
+    fn setting_a_pattern_is_undoable() {
+        let mut e = an_editor_with_a_blocker_selected();
+        let undos_before = e.undo_stack.len();
+
+        e.apply_pattern(Some("/tmp/bricks.png".to_string()));
+        assert_eq!(e.undo_stack.len(), undos_before + 1, "one undo entry was pushed");
+
+        e.undo();
+        assert_eq!(pattern_of(&e, 0), None, "undo takes the pattern back off");
+        let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    #[test]
+    fn clearing_a_pattern_removes_it_and_is_undoable_too() {
+        let mut e = an_editor_with_a_blocker_selected();
+        e.apply_pattern(Some("/tmp/bricks.png".to_string()));
+
+        e.apply_pattern(None);
+        assert_eq!(pattern_of(&e, 0), None, "Clear Pattern took it off");
+
+        e.undo();
+        assert_eq!(
+            pattern_of(&e, 0).as_deref(),
+            Some("/tmp/bricks.png"),
+            "and undo brings it back"
+        );
+        let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    #[test]
+    fn setting_a_pattern_marks_the_level_unsaved() {
+        let mut e = an_editor_with_a_blocker_selected();
+        assert!(!e.has_unsaved_changes(), "the fixture starts saved");
+
+        e.apply_pattern(Some("/tmp/bricks.png".to_string()));
+        assert!(e.has_unsaved_changes(), "a pattern is part of the level, so it is unsaved work");
+        let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    #[test]
+    fn the_gallery_is_preference_state_and_never_counts_as_level_work() {
+        let mut e = an_editor_with_a_blocker_selected();
+        let hash_before = e.compute_entities_hash();
+
+        e.gallery.remember("/tmp/bricks.png");
+        assert_eq!(e.compute_entities_hash(), hash_before, "remembering a pattern is not a level edit");
+        assert!(!e.has_unsaved_changes(), "and does not make the level unsaved");
+        let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    #[test]
+    fn the_pattern_commands_are_unavailable_without_a_polygon_or_during_play() {
+        let mut e = an_editor_with_a_blocker_selected();
+        assert!(e.can_set_pattern(), "a selected polygon, not playing");
+
+        e.selected_entity = None;
+        assert!(!e.can_set_pattern(), "nothing selected");
+
+        e.selected_entity = Some(0);
+        e.canvas_rect = Some(CANVAS);
+        e.start_play();
+        assert!(!e.can_set_pattern(), "the level is never changed while playing");
+
+        e.stop_play();
+        e.entities.push(Entity::new_bitmap(Pos2::ZERO, "coin_tool".to_string(), None));
+        e.selected_entity = Some(e.entities.len() - 1);
+        assert!(!e.can_set_pattern(), "a coin is not a polygon");
+        let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    #[test]
+    fn applying_a_pattern_does_nothing_when_the_commands_are_unavailable() {
+        let mut e = an_editor_with_a_blocker_selected();
+        e.selected_entity = None;
+        let undos_before = e.undo_stack.len();
+
+        e.apply_pattern(Some("/tmp/bricks.png".to_string()));
+
+        assert_eq!(pattern_of(&e, 0), None, "nothing was changed");
+        assert_eq!(e.undo_stack.len(), undos_before, "and no empty undo entry was pushed");
+        let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    #[test]
+    fn a_gallery_thumbnail_applies_through_the_same_path_as_the_menu() {
+        let mut e = an_editor_with_a_blocker_selected();
+        e.gallery.remember("/tmp/moss.png");
+
+        // Clicking a thumbnail is exactly this call, which is what the menu item uses.
+        e.apply_pattern(Some("/tmp/moss.png".to_string()));
+
+        assert_eq!(pattern_of(&e, 0).as_deref(), Some("/tmp/moss.png"), "applied to the blocker");
+        assert_eq!(e.gallery.entries()[0], "/tmp/moss.png", "and moved to the front of the gallery");
+        assert_eq!(e.gallery.entries().len(), 1, "without being remembered twice");
+
+        e.undo();
+        assert_eq!(pattern_of(&e, 0), None, "undoable, like the menu item");
+        let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    #[test]
+    fn using_patterns_fills_the_gallery_newest_first() {
+        let mut e = an_editor_with_a_blocker_selected();
+        for path in ["/tmp/a.png", "/tmp/b.png", "/tmp/c.png"] {
+            e.apply_pattern(Some(path.to_string()));
+        }
+        assert_eq!(
+            e.gallery.entries(),
+            ["/tmp/c.png", "/tmp/b.png", "/tmp/a.png"],
+            "most recently used first"
+        );
+        let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    #[test]
+    fn the_gallery_round_trips_through_the_config_file() {
+        let config = a_temp_config_path();
+        let mut e = EditorState::default();
+        e.entities = vec![a_blocker()];
+        e.selected_entity = Some(0);
+        e.config_path_override = Some(config.clone());
+
+        // Something else already owns keys in this file.
+        std::fs::write(
+            &config,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "last_background": "/tmp/bg.png",
+                "last_level": "/tmp/level.json",
+            }))
+            .unwrap(),
+        )
+        .expect("write the starting config");
+
+        e.apply_pattern(Some("/tmp/bricks.png".to_string()));
+
+        let written: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&config).expect("config was written"))
+                .expect("valid json");
+        assert_eq!(
+            written["recent_patterns"],
+            serde_json::json!(["/tmp/bricks.png"]),
+            "the gallery was saved"
+        );
+        assert_eq!(written["last_background"], "/tmp/bg.png", "and the other keys survived");
+        assert_eq!(written["last_level"], "/tmp/level.json");
+
+        // A fresh editor reading the same file sees it again. /tmp/bricks.png is not a
+        // real file, so load_gallery's pruning pass drops it on the way in; both halves
+        // are asserted rather than left to inference.
+        assert_eq!(
+            EditorState::gallery_from_config(&written).entries(),
+            ["/tmp/bricks.png"],
+            "the stored document parses back to the same gallery"
+        );
+        let mut next = EditorState::default();
+        next.config_path_override = Some(config.clone());
+        next.load_gallery();
+        assert!(
+            next.gallery.is_empty(),
+            "and loading prunes it, because that path is not a file that exists"
+        );
+
+        let _ = std::fs::remove_file(&config);
+    }
+
+    #[test]
+    fn a_config_with_no_gallery_key_reads_as_an_empty_gallery() {
+        let config = serde_json::json!({ "last_level": "/tmp/level.json" });
+        assert!(
+            EditorState::gallery_from_config(&config).is_empty(),
+            "a config written before patterns existed yields nothing, not an error"
+        );
+        assert!(
+            EditorState::gallery_from_config(&serde_json::json!({ "recent_patterns": "nonsense" }))
+                .is_empty(),
+            "and neither does a malformed value"
+        );
+    }
+
+    #[test]
+    fn saving_the_gallery_preserves_keys_the_editor_does_not_own() {
+        let existing = serde_json::json!({
+            "last_background": "/tmp/bg.png",
+            "something_else": { "kept": true },
+        });
+        let mut gallery = Gallery::default();
+        gallery.remember("/tmp/bricks.png");
+
+        let merged = EditorState::config_with_gallery(existing, &gallery);
+
+        assert_eq!(merged["recent_patterns"], serde_json::json!(["/tmp/bricks.png"]));
+        assert_eq!(merged["last_background"], "/tmp/bg.png");
+        assert_eq!(merged["something_else"]["kept"], true, "even keys nothing here understands");
+    }
+
+    #[test]
+    fn a_pattern_that_cannot_be_shown_is_dropped_when_the_window_is_drawn() {
+        // Deleting a pattern's file while the editor is open must not leave it in the
+        // gallery until the next launch: the window drops it as it draws.
+        let mut e = an_editor_with_a_blocker_selected();
+        for path in ["/tmp/keep.png", "/tmp/gone.png"] {
+            e.gallery.remember(path);
+        }
+        assert_eq!(e.gallery.entries().len(), 2, "both are remembered to begin with");
+
+        // What the window does once it knows which thumbnails resolved.
+        let changed = e.prune_unshowable(|p| p == "/tmp/keep.png");
+
+        assert!(changed, "the gallery was pruned");
+        assert_eq!(e.gallery.entries(), ["/tmp/keep.png"], "only what can be shown remains");
+
+        // And the pruned list is what a later launch reads back.
+        let written: serde_json::Value = serde_json::from_str(
+            &std::fs::read_to_string(e.config_file_path()).expect("config was rewritten"),
+        )
+        .expect("valid json");
+        assert_eq!(written["recent_patterns"], serde_json::json!(["/tmp/keep.png"]));
+
+        let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    #[test]
+    fn an_unreadable_pattern_still_occupies_a_slot_in_the_strip() {
+        // Eleven thumbnails for twelve remembered patterns, with nothing to explain the
+        // gap, is worse than a placeholder saying which file will not open.
+        let resolved = vec![
+            ("/tmp/fine.png".to_string(), Some("texture")),
+            ("/tmp/unreadable.png".to_string(), None),
+            ("/tmp/deleted.png".to_string(), None),
+        ];
+
+        let strip = EditorState::gallery_strip(resolved, |p| p != "/tmp/deleted.png");
+
+        let paths: Vec<&str> = strip.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["/tmp/fine.png", "/tmp/unreadable.png"],
+            "the file that is gone drops out, the same way the prune drops it; the one              that is merely unreadable stays"
+        );
+        assert_eq!(strip[1].1, None, "and it is drawn as a placeholder, not an image");
+    }
+
+    #[test]
+    fn a_strip_of_present_patterns_is_left_alone() {
+        let resolved = vec![
+            ("/tmp/a.png".to_string(), Some("texture")),
+            ("/tmp/b.png".to_string(), Some("texture")),
+        ];
+        let strip = EditorState::gallery_strip(resolved, |_| true);
+        assert_eq!(strip.len(), 2, "everything still on disk is drawn");
+    }
+
+    #[test]
+    fn a_deleted_pattern_is_not_drawn_even_while_its_texture_is_still_cached() {
+        // Applying a pattern caches its texture. Deleting the file afterwards must not
+        // leave the thumbnail on screen for the frame in which it is pruned: the strip
+        // and the prune are asked the same question, so they cannot disagree.
+        let resolved = vec![
+            ("/tmp/still_here.png".to_string(), Some("texture")),
+            ("/tmp/deleted_but_cached.png".to_string(), Some("texture")),
+        ];
+
+        let strip = EditorState::gallery_strip(resolved, |p| p == "/tmp/still_here.png");
+
+        let paths: Vec<&str> = strip.iter().map(|(p, _)| p.as_str()).collect();
+        assert_eq!(
+            paths,
+            ["/tmp/still_here.png"],
+            "a cached texture is not a reason to draw a file that has gone"
+        );
+    }
+
+    #[test]
+    fn a_pattern_that_merely_fails_to_decode_is_kept() {
+        // An image on an unmounted volume, or one that will not decode for a moment,
+        // must not cost the user the entry: the file is still there, so it stays.
+        let mut e = an_editor_with_a_blocker_selected();
+        let present = std::env::temp_dir().join("level_editor_test_undecodable.png");
+        std::fs::write(&present, b"this file exists but is not a valid image")
+            .expect("create the file");
+        let path = present.to_string_lossy().to_string();
+        e.gallery.remember(path.clone());
+        // Exactly what a failed decode leaves behind.
+        e.pattern_textures.insert(path.clone(), None);
+
+        let changed = e.prune_unshowable(|p| std::path::Path::new(p).exists());
+
+        assert!(!changed, "an undecodable but present file is not a reason to forget it");
+        assert_eq!(e.gallery.entries(), [path], "the entry survives");
+
+        let _ = std::fs::remove_file(&present);
+        let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    #[test]
+    fn pruning_a_gallery_that_is_already_showable_changes_and_writes_nothing() {
+        let mut e = an_editor_with_a_blocker_selected();
+        e.gallery.remember("/tmp/keep.png");
+        let _ = std::fs::remove_file(e.config_file_path());
+
+        let changed = e.prune_unshowable(|_| true);
+
+        assert!(!changed, "nothing to drop");
+        assert_eq!(e.gallery.entries(), ["/tmp/keep.png"]);
+        assert!(
+            !e.config_file_path().exists(),
+            "and an unchanged gallery is not rewritten to disk every frame"
+        );
+    }
+
+    #[test]
+    fn a_remembered_pattern_whose_file_has_gone_is_dropped_on_load() {
+        let config = a_temp_config_path();
+        let here = std::env::temp_dir().join("level_editor_test_pattern_present.png");
+        std::fs::write(&here, b"not a real png, but it exists").expect("create the file");
+        std::fs::write(
+            &config,
+            serde_json::to_string_pretty(&serde_json::json!({
+                "recent_patterns": [here.to_string_lossy(), "/nowhere/gone.png"],
+            }))
+            .unwrap(),
+        )
+        .expect("write config");
+
+        let mut e = EditorState::default();
+        e.config_path_override = Some(config.clone());
+        e.load_gallery();
+
+        assert_eq!(
+            e.gallery.entries(),
+            [here.to_string_lossy().to_string()],
+            "only the pattern that still exists is offered"
+        );
+
+        let _ = std::fs::remove_file(&config);
+        let _ = std::fs::remove_file(&here);
     }
 }

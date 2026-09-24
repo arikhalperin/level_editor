@@ -193,19 +193,31 @@ pub struct PolygonEntity {
     pub points: Vec<Pos2>,
     pub polygon_type: String, // e.g., "wall", "blocker", "polygon"
     pub color: Option<String>, // Optional hex color like "#FF0000"
+    /// Path to an image tiled across the shape, when one has been chosen. `None` leaves
+    /// the polygon drawn as an outline only, exactly as before patterns existed.
+    pub pattern: Option<String>,
 }
 
 impl PolygonEntity {
     pub fn new(points: Vec<Pos2>) -> Self {
-        Self { points, polygon_type: "polygon".to_string(), color: None }
+        Self { points, polygon_type: "polygon".to_string(), color: None, pattern: None }
     }
     
     pub fn with_type(points: Vec<Pos2>, polygon_type: String) -> Self {
-        Self { points, polygon_type, color: None }
+        Self { points, polygon_type, color: None, pattern: None }
     }
     
     pub fn with_type_and_color(points: Vec<Pos2>, polygon_type: String, color: Option<String>) -> Self {
-        Self { points, polygon_type, color }
+        Self { points, polygon_type, color, pattern: None }
+    }
+
+    pub fn with_type_color_and_pattern(
+        points: Vec<Pos2>,
+        polygon_type: String,
+        color: Option<String>,
+        pattern: Option<String>,
+    ) -> Self {
+        Self { points, polygon_type, color, pattern }
     }
 }
 
@@ -323,6 +335,20 @@ impl Entity {
         Entity::Polygon(PolygonEntity::with_type_and_color(points, polygon_type, color))
     }
 
+    pub fn new_polygon_with_type_color_and_pattern(
+        points: Vec<Pos2>,
+        polygon_type: String,
+        color: Option<String>,
+        pattern: Option<String>,
+    ) -> Self {
+        Entity::Polygon(PolygonEntity::with_type_color_and_pattern(
+            points,
+            polygon_type,
+            color,
+            pattern,
+        ))
+    }
+
     pub fn new_rope(anchor: Pos2, length: f32) -> Self {
         Entity::Rope(RopeEntity::new(anchor, length))
     }
@@ -388,6 +414,7 @@ impl Entity {
                     vertices,
                     polygon_type: Some(polygon.polygon_type.clone()),
                     color: polygon.color.clone(),
+                    pattern: polygon.pattern.clone(),
                 }
             }
         }
@@ -406,13 +433,18 @@ impl Entity {
                     toolbox_layout,
                 )
             }
-            LevelEntity::Polygon { vertices, polygon_type, color } => {
+            LevelEntity::Polygon { vertices, polygon_type, color, pattern } => {
                 let points: Vec<Pos2> = vertices
                     .iter()
                     .map(|v| Pos2::new(v[0], v[1]))
                     .collect();
                 let poly_type = polygon_type.as_deref().unwrap_or("polygon").to_string();
-                Entity::new_polygon_with_type_and_color(points, poly_type, color.clone())
+                Entity::new_polygon_with_type_color_and_pattern(
+                    points,
+                    poly_type,
+                    color.clone(),
+                    pattern.clone(),
+                )
             }
         }
     }
@@ -449,6 +481,58 @@ impl DrawableEntity for Entity {
             Entity::Polygon(p) => p.entity_type(),
             Entity::Rope(r) => r.entity_type(),
         }
+    }
+}
+
+#[cfg(test)]
+mod polygon_tests {
+    use super::*;
+
+    fn a_blocker() -> Entity {
+        Entity::new_polygon_with_type_color_and_pattern(
+            vec![Pos2::new(0.0, 0.0), Pos2::new(10.0, 0.0), Pos2::new(10.0, 10.0)],
+            "blocker_tool".to_string(),
+            Some("#FFFF00".to_string()),
+            Some("/tmp/bricks.png".to_string()),
+        )
+    }
+
+    #[test]
+    fn a_patterned_blocker_survives_the_trip_through_a_level_entity() {
+        let level = a_blocker().to_level_entity();
+        match &level {
+            LevelEntity::Polygon { pattern, color, polygon_type, vertices } => {
+                assert_eq!(pattern.as_deref(), Some("/tmp/bricks.png"), "the pattern is written");
+                assert_eq!(color.as_deref(), Some("#FFFF00"), "alongside the colour");
+                assert_eq!(polygon_type.as_deref(), Some("blocker_tool"));
+                assert_eq!(vertices.len(), 3);
+            }
+            other => panic!("a polygon should save as a polygon, got {other:?}"),
+        }
+
+        let back = Entity::from_level_entity(&level, None);
+        let polygon = back.as_polygon().expect("and loads back as a polygon");
+        assert_eq!(
+            polygon.pattern.as_deref(),
+            Some("/tmp/bricks.png"),
+            "with its pattern intact"
+        );
+        assert_eq!(polygon.color.as_deref(), Some("#FFFF00"));
+        assert_eq!(polygon.polygon_type, "blocker_tool");
+        assert_eq!(polygon.points.len(), 3);
+    }
+
+    #[test]
+    fn a_polygon_without_a_pattern_makes_the_round_trip_unchanged() {
+        let plain = Entity::new_polygon_with_type(
+            vec![Pos2::new(0.0, 0.0), Pos2::new(10.0, 0.0), Pos2::new(10.0, 10.0)],
+            "wall_tool".to_string(),
+        );
+        let back = Entity::from_level_entity(&plain.to_level_entity(), None);
+        let polygon = back.as_polygon().expect("still a polygon");
+
+        assert_eq!(polygon.pattern, None, "no pattern is invented on the way through");
+        assert_eq!(polygon.polygon_type, "wall_tool");
     }
 }
 
