@@ -40,6 +40,20 @@ mod entities;
 use entities::{Entity, DrawableEntity, RopeEntity, RopePlacement, ROPE_COLOR};
 
 mod debug_export;
+
+mod undo;
+use undo::Snapshot;
+
+mod ai_client;
+
+mod traversal;
+
+mod level_gen;
+
+mod repair;
+
+mod generate_ui;
+use generate_ui::{GenerateDialog, GenerateRun};
 use debug_export::{write_minimap_debug_json, MinimapDebugSnapshot};
 
 use std::collections::HashMap;
@@ -52,6 +66,9 @@ use tracing::{error, trace, warn};
 enum PendingAction {
     Exit,
     NewLevel,
+    /// Replace the level with a generated one, which destroys the open level just as
+    /// `NewLevel` does and so asks about unsaved work the same way.
+    GenerateLevel,
 }
 
 impl PendingAction {
@@ -61,6 +78,9 @@ impl PendingAction {
             PendingAction::Exit => "You have unsaved changes. Save before exiting?",
             PendingAction::NewLevel => {
                 "You have unsaved changes. Save before starting a new level?"
+            }
+            PendingAction::GenerateLevel => {
+                "You have unsaved changes. Save before generating a new level?"
             }
         }
     }
@@ -107,8 +127,8 @@ struct EditorState {
     editing_polygon_entity: Option<usize>,
     editing_polygon_point: Option<usize>,
     dragging_polygon_point: bool,
-    undo_stack: Vec<Vec<Entity>>,
-    redo_stack: Vec<Vec<Entity>>,
+    undo_stack: Vec<Snapshot>,
+    redo_stack: Vec<Snapshot>,
     last_save_hash: u64,
     /// Which command is waiting on the unsaved-changes confirmation, if any.
     pending_action: Option<PendingAction>,
@@ -147,6 +167,25 @@ struct EditorState {
     /// when play started, or wherever the canvas was last clicked during play. An
     /// in-run restart and a death both return the character here.
     play_spawn: Option<Pos2>,
+    /// Where a run of the open level begins, when the level file carries one. Play mode
+    /// starts the character here instead of at the centre of the visible canvas; a level
+    /// with none — every level built by hand — keeps the view-centre behaviour.
+    level_spawn: Option<Pos2>,
+    /// Where the open level's critical path ends, when it carries one. Written by AI
+    /// generation so the route it proved can be re-proved later.
+    level_exit: Option<Pos2>,
+    /// Where the config lives, when it is not the user's config directory. Only a test sets
+    /// this.
+    config_path_override: Option<std::path::PathBuf>,
+    /// The generation dialog's contents. Kept between openings so the endpoint, the model
+    /// name and the last prompt are still there next time.
+    generate_dialog: GenerateDialog,
+    /// True while the generation window is open.
+    generate_open: bool,
+    /// The run in flight, if any.
+    generate_run: Option<GenerateRun>,
+    /// What to tell the user about the run that just finished: the report, or the failure.
+    generate_message: Option<String>,
     /// Tool and tool name to restore when play mode ends.
     tool_before_play: Option<(Tool, Option<String>)>,
     /// The editor's scroll state when play began, restored when play ends so testing a
@@ -210,6 +249,13 @@ impl Default for EditorState {
             size_dialog: None,
             play: None,
             play_spawn: None,
+            level_spawn: None,
+            level_exit: None,
+            config_path_override: None,
+            generate_dialog: GenerateDialog::default(),
+            generate_open: false,
+            generate_run: None,
+            generate_message: None,
             tool_before_play: None,
             view_before_play: None,
             combat_debug: false,
@@ -228,9 +274,18 @@ impl EditorState {
             std::path::PathBuf::from(".rust_game_editor_config.json")
         }
     }
+
+    /// Where this editor reads and writes its config. Normally the user's config directory;
+    /// a test points it at a file of its own, so what the editor remembers across a restart
+    /// can actually be checked instead of only assumed.
+    fn config_file_path(&self) -> std::path::PathBuf {
+        self.config_path_override
+            .clone()
+            .unwrap_or_else(Self::get_config_file_path)
+    }
     
     fn load_last_background_path(&mut self) {
-        let config_path = Self::get_config_file_path();
+        let config_path = self.config_file_path();
         if let Ok(content) = std::fs::read_to_string(&config_path) {
             if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(bg_path) = config.get("last_background").and_then(|v| v.as_str()) {
@@ -246,7 +301,7 @@ impl EditorState {
     }
     
     fn save_background_path(&self, path: &std::path::PathBuf) {
-        let config_path = Self::get_config_file_path();
+        let config_path = self.config_file_path();
         let mut config = if let Ok(content) = std::fs::read_to_string(&config_path) {
             serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
         } else {
@@ -262,7 +317,7 @@ impl EditorState {
     }
     
     fn load_last_level_path(&mut self) {
-        let config_path = Self::get_config_file_path();
+        let config_path = self.config_file_path();
         if let Ok(content) = std::fs::read_to_string(&config_path) {
             if let Ok(config) = serde_json::from_str::<serde_json::Value>(&content) {
                 if let Some(level_path) = config.get("last_level").and_then(|v| v.as_str()) {
@@ -280,7 +335,7 @@ impl EditorState {
     }
     
     fn save_level_path(&self, path: &std::path::PathBuf) {
-        let config_path = Self::get_config_file_path();
+        let config_path = self.config_file_path();
         let mut config = if let Ok(content) = std::fs::read_to_string(&config_path) {
             serde_json::from_str(&content).unwrap_or_else(|_| serde_json::json!({}))
         } else {
@@ -296,7 +351,7 @@ impl EditorState {
     }
     
     fn compute_entities_hash(&self) -> u64 {
-        new_level::level_hash(&self.entities, self.level_size)
+        new_level::level_hash(&self.entities, self.level_size, self.level_spawn, self.level_exit)
     }
 
     /// Throw the level away and start an empty one. Pure in-memory: nothing is written,
@@ -308,6 +363,8 @@ impl EditorState {
         self.background_size = blank.background_size;
         self.background_controller.clear();
         self.play_spawn = blank.play_spawn;
+        self.level_spawn = blank.level_spawn;
+        self.level_exit = blank.level_exit;
         self.last_click_pos = None;
         self.selected_entity = blank.selected_entity;
         self.editing_polygon_entity = blank.editing_polygon_entity;
@@ -331,11 +388,111 @@ impl EditorState {
         trace!("new_level_started");
     }
 
+    /// Open the generation window, with the extent defaulting to the level's own.
+    fn open_generate_dialog(&mut self) {
+        self.generate_dialog.extent = self.resolved_level_size();
+        // The remembered endpoint and model are loaded once at startup, not here: whatever
+        // is in the dialog now is either that or something the user has since typed, and
+        // reopening the window must not throw either away.
+        self.generate_open = true;
+        self.generate_message = None;
+        trace!("generate_dialog_opened extent={:?}", self.generate_dialog.extent);
+    }
+
+    /// Everything the editor restores from its config on the first frame. One function so a
+    /// test can pin the set: dropping a line from here fails that test rather than quietly
+    /// making something stop being remembered, which is exactly how the endpoint and model
+    /// came to be written and never read.
+    fn initial_load(&mut self) {
+        self.load_last_background_path();
+        self.load_last_level_path();
+        self.load_remembered_model_settings();
+    }
+
+    /// Take the remembered endpoint, model and seed from the config into the dialog. Called
+    /// once at startup, beside the other remembered values, so a user who points the endpoint
+    /// at a local model server finds it still there next time.
+    fn load_remembered_model_settings(&mut self) {
+        let settings = self.load_ai_settings();
+        trace!("loaded_remembered_model_settings endpoint={}", settings.endpoint);
+        // Through `adopt_settings`, so the seed reaches the box it is read from as well as
+        // the struct.
+        self.generate_dialog.adopt_settings(settings);
+    }
+
+    /// The model settings as the config file has them.
+    fn load_ai_settings(&self) -> crate::ai_client::ModelSettings {
+        let path = self.config_file_path();
+        let config = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        generate_ui::read_settings(&config)
+    }
+
+    /// Remember the endpoint, model and seed, leaving the rest of the config alone.
+    fn save_ai_settings(&self, settings: &crate::ai_client::ModelSettings) {
+        let path = self.config_file_path();
+        let mut config = std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(&text).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        generate_ui::write_settings(&mut config, settings);
+        if let Ok(json) = serde_json::to_string_pretty(&config) {
+            let _ = std::fs::write(&path, json);
+            trace!("saved_ai_settings endpoint={}", settings.endpoint);
+        }
+    }
+
+    /// Put a generated level on the canvas, replacing what was open.
+    ///
+    /// One undoable step: `save_state` records the whole level first, so a single Ctrl+Z
+    /// puts back the entities, the size and the spawn exactly as they were.
+    fn apply_generated_level(&mut self, level: &LevelData) {
+        self.save_state();
+        self.entities = level
+            .entities
+            .iter()
+            .map(|e| Entity::from_level_entity(e, self.toolbox_layout.as_ref()))
+            .collect();
+        self.level_size = level
+            .level_size
+            .map(|s| Vec2::new(s[0], s[1]))
+            .and_then(level_size::validate);
+        self.level_spawn = level.spawn.map(|p| Pos2::new(p[0], p[1]));
+        self.level_exit = level.exit.map(|p| Pos2::new(p[0], p[1]));
+        // A generated level has never been saved anywhere, so the next Save asks where to
+        // put it rather than overwriting whatever was open before.
+        self.last_level_path = None;
+        self.selected_entity = None;
+        self.editing_polygon_entity = None;
+        self.editing_polygon_point = None;
+        self.drawing_polygon = None;
+        self.drawing_rope = None;
+        // Look at the start of the level that was just made.
+        if let Some(spawn) = self.level_spawn {
+            let canvas = self.canvas_rect.map(|r| r.size()).unwrap_or(Vec2::new(1200.0, 800.0));
+            let offset = Vec2::new(
+                (spawn.x - canvas.x / 2.0).max(0.0),
+                (spawn.y - canvas.y / 2.0).max(0.0),
+            );
+            self.scroll = ScrollModel { offset, velocity: Vec2::ZERO };
+            self.scroll_offset = self.scroll.pixel_offset();
+        }
+        trace!(
+            "generated_level_applied entities={} spawn={:?} exit={:?}",
+            self.entities.len(),
+            self.level_spawn,
+            self.level_exit
+        );
+    }
+
     /// Run the command that was waiting on the unsaved-changes confirmation.
     fn run_pending_action(&mut self, action: PendingAction) {
         match action {
             PendingAction::Exit => std::process::exit(0),
             PendingAction::NewLevel => self.new_level(),
+            PendingAction::GenerateLevel => self.open_generate_dialog(),
         }
     }
 
@@ -368,9 +525,29 @@ impl EditorState {
         })
     }
 
+    /// Everything one undoable step restores.
+    fn snapshot(&self) -> Snapshot {
+        Snapshot {
+            entities: self.entities.clone(),
+            level_size: self.level_size,
+            level_spawn: self.level_spawn,
+            level_exit: self.level_exit,
+            last_level_path: self.last_level_path.clone(),
+        }
+    }
+
+    /// Put a snapshot back on the editor.
+    fn restore(&mut self, snapshot: Snapshot) {
+        self.entities = snapshot.entities;
+        self.level_size = snapshot.level_size;
+        self.level_spawn = snapshot.level_spawn;
+        self.level_exit = snapshot.level_exit;
+        self.last_level_path = snapshot.last_level_path;
+    }
+
     fn save_state(&mut self) {
         // Save current state to undo stack
-        self.undo_stack.push(self.entities.clone());
+        self.undo_stack.push(self.snapshot());
         // Limit undo stack size to prevent memory issues
         if self.undo_stack.len() > 100 {
             self.undo_stack.remove(0);
@@ -383,9 +560,9 @@ impl EditorState {
     fn undo(&mut self) {
         if let Some(previous_state) = self.undo_stack.pop() {
             // Save current state to redo stack
-            self.redo_stack.push(self.entities.clone());
+            self.redo_stack.push(self.snapshot());
             // Restore previous state
-            self.entities = previous_state;
+            self.restore(previous_state);
             // Clear any selections/edits that may now be invalid
             self.selected_entity = None;
             self.editing_polygon_entity = None;
@@ -401,9 +578,9 @@ impl EditorState {
     fn redo(&mut self) {
         if let Some(next_state) = self.redo_stack.pop() {
             // Save current state to undo stack
-            self.undo_stack.push(self.entities.clone());
+            self.undo_stack.push(self.snapshot());
             // Restore next state
-            self.entities = next_state;
+            self.restore(next_state);
             // Clear any selections/edits that may now be invalid
             self.selected_entity = None;
             self.editing_polygon_entity = None;
@@ -538,6 +715,8 @@ impl EditorState {
                 None
             },
             level_size: self.level_size.map(|s| [s.x, s.y]),
+            spawn: self.level_spawn.map(|p| [p.x, p.y]),
+            exit: self.level_exit.map(|p| [p.x, p.y]),
             entities: self.entities.iter().map(|e| e.to_level_entity()).collect(),
         };
 
@@ -589,6 +768,8 @@ impl EditorState {
             .level_size
             .map(|s| Vec2::new(s[0], s[1]))
             .and_then(level_size::validate);
+        self.level_spawn = level_data.spawn.map(|p| Pos2::new(p[0], p[1]));
+        self.level_exit = level_data.exit.map(|p| Pos2::new(p[0], p[1]));
         
         // Clear selections
         self.selected_entity = None;
@@ -785,12 +966,15 @@ impl EditorState {
     }
 
     fn start_play(&mut self) {
-        // Spawn at the centre of what is on screen, so trying a spot is a matter of
-        // scrolling until you can see it and pressing play: a click made earlier
-        // somewhere else in the level no longer decides where the run begins. Before
-        // the first frame there is no canvas to measure, so fall back to the last spawn.
+        // A level that carries its own start — one that was generated, and proved playable
+        // from exactly there — begins there. Otherwise spawn at the centre of what is on
+        // screen, so trying a spot is a matter of scrolling until you can see it and
+        // pressing play: a click made earlier somewhere else in the level no longer
+        // decides where the run begins. Before the first frame there is no canvas to
+        // measure, so fall back to the last spawn.
         let spawn = self
-            .view_centre()
+            .level_spawn
+            .or_else(|| self.view_centre())
             .or(self.play_spawn)
             .unwrap_or(Pos2::new(100.0, 100.0));
         self.play_spawn = Some(spawn);
@@ -1005,6 +1189,171 @@ impl EditorState {
     }
 
     /// Modal Level Size dialog. Applies only a valid size.
+    /// The generation window, and the progress of a run in flight.
+    ///
+    /// The run lives on a worker thread; this only reads what it has reported. While one is
+    /// in flight the context is asked to repaint every frame, so the elapsed time ticks and
+    /// the stage line keeps up even though nothing else is happening.
+    fn render_generate_dialog(&mut self, ctx: &egui::Context) {
+        // Take whatever the worker has said, and deal with a run that has finished.
+        let mut finished = None;
+        if let Some(run) = &mut self.generate_run {
+            let running = run.poll();
+            if running {
+                ctx.request_repaint();
+            } else {
+                finished = self.generate_run.take().and_then(|r| r.outcome);
+            }
+        }
+        if let Some(outcome) = finished {
+            match outcome {
+                Ok(generated) => {
+                    // The window stays up so the report can be read — in particular
+                    // whether the level is the model's own work or was repaired. The level
+                    // itself is already on the canvas behind it.
+                    self.generate_message = Some(generate_ui::report(&generated));
+                    self.apply_generated_level(&generated.level);
+                }
+                Err(why) => {
+                    // Nothing is applied, so the open level is exactly as it was.
+                    self.generate_message = Some(why.to_string());
+                    trace!("generate_failed reason={}", why);
+                }
+            }
+        }
+
+        if !self.generate_open {
+            return;
+        }
+
+        let mut open = true;
+        let mut close = false;
+        let mut start = false;
+        let mut cancel = false;
+        let running = self.generate_run.is_some();
+        let dialog = &mut self.generate_dialog;
+        let message = self.generate_message.clone();
+        let stage = self
+            .generate_run
+            .as_ref()
+            .map(|r| (r.stage.clone(), r.started.elapsed().as_secs()));
+
+        egui::Window::new("Generate Level with AI")
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_width(460.0)
+            .show(ctx, |ui| {
+                ui.add_enabled_ui(!running, |ui| {
+                    ui.label("Describe the area you want:");
+                    ui.add(
+                        egui::TextEdit::multiline(&mut dialog.prompt)
+                            .desired_rows(3)
+                            .desired_width(f32::INFINITY)
+                            .hint_text("a flooded cistern, heavy on wall-jumps, ending in a boss hall"),
+                    );
+                    ui.separator();
+                    egui::Grid::new("generate_grid").num_columns(2).show(ui, |ui| {
+                        ui.label("Endpoint");
+                        ui.text_edit_singleline(&mut dialog.settings.endpoint);
+                        ui.end_row();
+                        ui.label("Model");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut dialog.settings.model)
+                                .hint_text("the model your local server has loaded"),
+                        );
+                        ui.end_row();
+                        ui.label("Chambers");
+                        ui.add(egui::Slider::new(
+                            &mut dialog.chambers,
+                            generate_ui::CHAMBERS_MIN..=generate_ui::CHAMBERS_MAX,
+                        ));
+                        ui.end_row();
+                        ui.label("Seed");
+                        ui.add(
+                            egui::TextEdit::singleline(&mut dialog.seed_text)
+                                .hint_text("optional, for a repeatable level"),
+                        );
+                        ui.end_row();
+                    });
+                    ui.label(
+                        egui::RichText::new(format!(
+                            "Into {:.0} x {:.0} px. The model writes the level itself, and the \
+                             editor will not hand it over until the play simulation has walked \
+                             a route through it.",
+                            dialog.extent.x, dialog.extent.y
+                        ))
+                        .weak(),
+                    );
+                    // The key situation, never the key.
+                    let status = dialog.key_status();
+                    let colour = match status {
+                        generate_ui::KeyStatus::Missing => Color32::from_rgb(200, 120, 60),
+                        _ => Color32::from_gray(140),
+                    };
+                    ui.label(egui::RichText::new(status.line()).color(colour));
+                });
+
+                ui.separator();
+                if let Some((stage, secs)) = &stage {
+                    ui.horizontal(|ui| {
+                        ui.spinner();
+                        ui.label(generate_ui::stage_line(stage, *secs));
+                    });
+                    if ui.button("Cancel").clicked() {
+                        cancel = true;
+                    }
+                } else {
+                    ui.horizontal(|ui| {
+                        let can = dialog.can_generate();
+                        let why = dialog.why_not_generate().unwrap_or_default();
+                        if ui
+                            .add_enabled(can, egui::Button::new("Generate"))
+                            .on_disabled_hover_text(why)
+                            .clicked()
+                        {
+                            start = true;
+                        }
+                        if ui.button("Close").clicked() {
+                            close = true;
+                        }
+                    });
+                }
+
+                if let Some(message) = &message {
+                    ui.separator();
+                    ui.label(message);
+                }
+            });
+
+        if cancel {
+            // Tell the run to stop, then let go of it. The worker checks the flag between
+            // requests, but it cannot be interrupted part-way through one, and a reply from
+            // a slow server can be minutes away; holding on would leave the user watching a
+            // spinner for a request whose answer is already unwanted. Dropping the handle
+            // discards whatever it eventually produces, so the open level is safe either
+            // way, and Cancel is immediate as far as the user is concerned.
+            if let Some(run) = self.generate_run.take() {
+                run.cancel();
+            }
+            self.generate_message =
+                Some("Generation cancelled. Your level has not been touched.".to_string());
+            trace!("generate_cancelled");
+        }
+        if start {
+            let settings = self.generate_dialog.model_settings();
+            self.save_ai_settings(&settings);
+            let params = self.generate_dialog.params();
+            self.generate_message = None;
+            self.generate_run =
+                Some(GenerateRun::start(self.generate_dialog.client(), params));
+            trace!("generate_started chambers={} extent={:?}", self.generate_dialog.chambers, self.generate_dialog.extent);
+        }
+        if (close || !open) && self.generate_run.is_none() {
+            self.generate_open = false;
+        }
+    }
+
     fn render_size_dialog(&mut self, ctx: &egui::Context) {
         let Some((w_text, h_text)) = self.size_dialog.clone() else {
             self.size_dialog_rect = None;
@@ -1233,8 +1582,7 @@ impl eframe::App for EditorState {
         // Load last background and level on first frame after UI is initialized
         if !self.initial_load_done {
             self.initial_load_done = true;
-            self.load_last_background_path();
-            self.load_last_level_path();
+            self.initial_load();
         }
 
         trace!("update_menu_bar_start");
@@ -1294,6 +1642,19 @@ impl eframe::App for EditorState {
                     }
                 });
                 ui.menu_button("Level", |ui| {
+                    // Generating replaces the level being played, exactly as New Level and
+                    // Load Level would, so it is unavailable for the same reason.
+                    let can_edit = self.play.is_none();
+                    if ui
+                        .add_enabled(can_edit, egui::Button::new("Generate Level with AI\u{2026}"))
+                        .on_disabled_hover_text("Stop play mode first")
+                        .clicked()
+                    {
+                        self.ui_consumed_click = true;
+                        ui.close_menu();
+                        trace!("menu_generate_level_clicked");
+                        self.request_action(PendingAction::GenerateLevel);
+                    }
                     if ui.button("Level Size\u{2026}").clicked() {
                         self.ui_consumed_click = true;
                         ui.close_menu();
@@ -1324,6 +1685,7 @@ impl eframe::App for EditorState {
 
         self.render_help_window(ctx);
         self.render_size_dialog(ctx);
+        self.render_generate_dialog(ctx);
         
         // Handle exit with unsaved changes prompt
         if let Some(action) = self.pending_action {
@@ -2186,8 +2548,8 @@ mod editor_state_tests {
         e.dragging_entity = true;
         e.dragging_polygon_point = true;
         e.drawing_polygon = Some(vec![Pos2::new(0.0, 0.0)]);
-        e.undo_stack = vec![vec![a_polygon()]];
-        e.redo_stack = vec![vec![]];
+        e.undo_stack = vec![Snapshot { entities: vec![a_polygon()], ..Snapshot::default() }];
+        e.redo_stack = vec![Snapshot::default()];
         e.scroll = ScrollModel { offset: Vec2::new(900.0, 700.0), velocity: Vec2::new(400.0, -200.0) };
         e.scroll_offset = e.scroll.pixel_offset();
         e.last_level_path = Some(std::path::PathBuf::from("/tmp/some_level.json"));
@@ -2195,6 +2557,344 @@ mod editor_state_tests {
         e.size_dialog = Some(("4000".to_string(), "3000".to_string()));
         e.last_save_hash = e.compute_entities_hash();
         e
+    }
+
+    // ── AI level generation ──────────────────────────────────────────────────
+
+    /// A small generated level: floor, a start and an end.
+    fn a_generated_level() -> LevelData {
+        LevelData {
+            version: "1.0".to_string(),
+            background: None,
+            background_size: None,
+            level_size: Some([5000.0, 2500.0]),
+            spawn: Some([1200.0, 700.0]),
+            exit: Some([4200.0, 700.0]),
+            entities: vec![
+                level_data::LevelEntity::Polygon {
+                    vertices: vec![[0.0, 900.0], [5000.0, 900.0], [5000.0, 1000.0], [0.0, 1000.0]],
+                    polygon_type: Some("blocker_tool".to_string()),
+                    color: None,
+                },
+                level_data::LevelEntity::Bitmap {
+                    position: [2000.0, 800.0],
+                    bitmap_name: "coin_tool".to_string(),
+                    size: [64.0, 64.0],
+                },
+            ],
+        }
+    }
+
+    // A13 — one undoable step restores the entities, the size and the spawn.
+    #[test]
+    fn a_generated_level_replaces_the_open_one_in_a_single_undoable_step() {
+        let mut e = a_working_editor();
+        e.level_spawn = Some(Pos2::new(11.0, 22.0));
+        e.level_exit = Some(Pos2::new(33.0, 44.0));
+        let before_entities = e.entities.clone();
+        let before_size = e.level_size;
+        let before_spawn = e.level_spawn;
+        let before_exit = e.level_exit;
+        let undo_depth = e.undo_stack.len();
+
+        e.apply_generated_level(&a_generated_level());
+
+        assert_eq!(e.entities.len(), 2, "the generated level is on the canvas");
+        assert_eq!(e.level_size, Some(Vec2::new(5000.0, 2500.0)));
+        assert_eq!(e.level_spawn, Some(Pos2::new(1200.0, 700.0)));
+        assert_eq!(e.level_exit, Some(Pos2::new(4200.0, 700.0)));
+        assert_eq!(
+            e.undo_stack.len(),
+            undo_depth + 1,
+            "exactly one step was pushed, so one Ctrl+Z is enough"
+        );
+
+        e.undo();
+
+        assert_eq!(
+            format!("{:?}", e.entities),
+            format!("{before_entities:?}"),
+            "undo puts the entities back"
+        );
+        assert_eq!(e.level_size, before_size, "and the level size");
+        assert_eq!(e.level_spawn, before_spawn, "and the spawn");
+        assert_eq!(e.level_exit, before_exit, "and the exit");
+    }
+
+    #[test]
+    fn undoing_a_generated_level_gives_back_the_file_the_old_one_came_from() {
+        let mut e = a_working_editor();
+        let path = std::path::PathBuf::from("/tmp/some_level.json");
+        e.last_level_path = Some(path.clone());
+
+        e.apply_generated_level(&a_generated_level());
+        assert_eq!(e.last_level_path, None, "a generated level has no file of its own");
+
+        e.undo();
+
+        assert_eq!(
+            e.last_level_path,
+            Some(path),
+            "undo must give back the level *and* the file it came from, so the next save \
+             overwrites it rather than asking where to put it"
+        );
+    }
+
+    #[test]
+    fn a_generated_level_forgets_the_path_of_the_level_it_replaced() {
+        let mut e = a_working_editor();
+        assert!(e.last_level_path.is_some(), "the fixture has a level open");
+        e.apply_generated_level(&a_generated_level());
+        assert_eq!(
+            e.last_level_path, None,
+            "saving a generated level must ask where to put it, not overwrite what was open"
+        );
+    }
+
+    #[test]
+    fn a_generated_level_clears_any_selection_or_half_drawn_shape() {
+        let mut e = a_working_editor();
+        e.apply_generated_level(&a_generated_level());
+        assert_eq!(e.selected_entity, None);
+        assert_eq!(e.editing_polygon_entity, None);
+        assert_eq!(e.editing_polygon_point, None);
+        assert_eq!(e.drawing_polygon, None);
+    }
+
+    /// An editor whose config is a file of this test's own, in the scratch directory.
+    fn an_editor_with_its_own_config(name: &str) -> (EditorState, std::path::PathBuf) {
+        // The process id keeps concurrent `cargo test` runs on one machine from colliding.
+        let path = std::env::temp_dir()
+            .join(format!("level_editor_test_config_{name}_{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        let mut e = EditorState::default();
+        e.config_path_override = Some(path.clone());
+        (e, path)
+    }
+
+    // A2, second half — the endpoint and model the editor remembers really do come back.
+    //
+    // This is the test that was missing: the settings were being written on every Generate
+    // and never read, because the only call that loaded them sat behind a condition that a
+    // prefilled default model made permanently false. Round-tripping the two pure functions
+    // did not notice, because the editor never called them.
+    #[test]
+    fn the_endpoint_and_model_come_back_after_a_restart() {
+        let (mut first, path) = an_editor_with_its_own_config("restart");
+
+        // The user points the editor at a model on their own machine and generates.
+        first.generate_dialog.settings = crate::ai_client::ModelSettings {
+            endpoint: "http://localhost:11434/v1".to_string(),
+            model: "llama3.1:8b".to_string(),
+            seed: Some(4242),
+        };
+        first.save_ai_settings(&first.generate_dialog.settings.clone());
+
+        // A fresh editor, as if restarted, reading the same config.
+        let mut second = EditorState::default();
+        second.config_path_override = Some(path.clone());
+        assert_eq!(
+            second.generate_dialog.settings.endpoint,
+            crate::ai_client::DEFAULT_ENDPOINT,
+            "before loading, a fresh editor holds the defaults"
+        );
+
+        second.load_remembered_model_settings();
+
+        assert_eq!(
+            second.generate_dialog.settings.endpoint, "http://localhost:11434/v1",
+            "the endpoint the user chose must survive a restart, or the local-model \
+             workflow silently reverts to OpenAI on every launch"
+        );
+        assert_eq!(second.generate_dialog.settings.model, "llama3.1:8b");
+        assert_eq!(second.generate_dialog.settings.seed, Some(4242));
+        assert_eq!(
+            second.generate_dialog.seed_text, "4242",
+            "the seed must reach the box it is read from, or the next Generate sends none \
+             and then erases the remembered one"
+        );
+        assert_eq!(
+            second.generate_dialog.model_settings().seed,
+            Some(4242),
+            "and a request made now must actually carry it"
+        );
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    /// Everything the first frame restores. This pins the set: if a line is dropped from
+    /// `initial_load`, whatever it restored stops being restored and this fails.
+    #[test]
+    fn the_first_frame_restores_everything_the_editor_remembers() {
+        let (mut e, path) = an_editor_with_its_own_config("initial_load");
+        e.save_level_path(&std::path::PathBuf::from("/tmp/no_such_level.json"));
+        e.save_ai_settings(&crate::ai_client::ModelSettings {
+            endpoint: "http://localhost:11434/v1".to_string(),
+            model: "a-model".to_string(),
+            seed: Some(7),
+        });
+
+        let mut fresh = EditorState::default();
+        fresh.config_path_override = Some(path.clone());
+        fresh.initial_load();
+
+        // The model settings, which is what regressed before.
+        assert_eq!(fresh.generate_dialog.settings.endpoint, "http://localhost:11434/v1");
+        assert_eq!(fresh.generate_dialog.settings.model, "a-model");
+        assert_eq!(fresh.generate_dialog.seed_text, "7");
+        // The remembered level path is consulted too. The file does not exist, so nothing is
+        // loaded from it and `last_level_path` stays unset — the point here is that
+        // `initial_load` reads the config at all rather than what it does with a missing file.
+        assert_eq!(fresh.last_level_path, None, "a level that is gone is not loaded");
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn a_fresh_config_leaves_the_openai_defaults_in_place() {
+        let (mut e, path) = an_editor_with_its_own_config("fresh");
+        e.load_remembered_model_settings();
+        assert_eq!(e.generate_dialog.settings.endpoint, "https://api.openai.com/v1");
+        assert_eq!(e.generate_dialog.settings.model, "gpt-6-astra");
+        let _ = std::fs::remove_file(&path);
+    }
+
+    #[test]
+    fn remembering_the_model_settings_does_not_disturb_the_remembered_level() {
+        let (mut e, path) = an_editor_with_its_own_config("coexist");
+        let level = std::path::PathBuf::from("/tmp/some_level.json");
+        e.save_level_path(&level);
+        e.save_ai_settings(&crate::ai_client::ModelSettings {
+            endpoint: "http://localhost:1234/v1".to_string(),
+            model: "a-model".to_string(),
+            seed: None,
+        });
+
+        let config: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(&path).expect("written")).expect("json");
+        assert_eq!(config["last_level"], "/tmp/some_level.json", "the level path survives");
+        assert_eq!(config["ai_endpoint"], "http://localhost:1234/v1");
+        assert_eq!(config["ai_model"], "a-model");
+
+        // A21 — and no key is anywhere in what was written.
+        let text = std::fs::read_to_string(&path).expect("read");
+        assert!(!text.contains("OPENAI_API_KEY"), "got: {text}");
+        assert!(!text.to_lowercase().contains("api_key"), "no key field exists at all: {text}");
+        if let Some(key) = crate::ai_client::api_key_from_env() {
+            assert!(!text.contains(&key), "the key reached the config file");
+        }
+
+        let _ = std::fs::remove_file(&path);
+    }
+
+    // A14 — generation goes through the existing unsaved-changes confirmation.
+    #[test]
+    fn generating_with_unsaved_changes_asks_first_and_cancel_changes_nothing() {
+        let mut e = a_working_editor();
+        e.entities.push(a_polygon()); // Now dirty.
+        assert!(e.has_unsaved_changes());
+        let before = e.entities.len();
+
+        e.request_action(PendingAction::GenerateLevel);
+
+        assert_eq!(
+            e.pending_action,
+            Some(PendingAction::GenerateLevel),
+            "it must ask before destroying unsaved work"
+        );
+        assert!(!e.generate_open, "and must not open the window until that is settled");
+        assert_eq!(e.entities.len(), before, "nothing was touched");
+
+        // Cancel is the dialog simply dropping the pending action.
+        e.pending_action = None;
+        assert_eq!(e.entities.len(), before, "cancelling leaves the level alone");
+        assert!(!e.generate_open);
+    }
+
+    #[test]
+    fn generating_with_no_unsaved_changes_opens_the_window_straight_away() {
+        let mut e = a_working_editor();
+        e.last_save_hash = e.compute_entities_hash(); // Clean.
+        assert!(!e.has_unsaved_changes());
+
+        e.request_action(PendingAction::GenerateLevel);
+
+        assert_eq!(e.pending_action, None, "there is nothing to ask about");
+        assert!(e.generate_open, "so the window opens at once");
+    }
+
+    #[test]
+    fn the_generate_confirmation_says_what_it_is_about_to_do() {
+        let prompt = PendingAction::GenerateLevel.prompt();
+        assert!(prompt.contains("unsaved changes"), "{prompt}");
+        assert!(prompt.contains("generating"), "{prompt}");
+    }
+
+    #[test]
+    fn opening_the_generate_window_offers_the_levels_own_extent() {
+        let mut e = a_working_editor();
+        e.level_size = Some(Vec2::new(7000.0, 4000.0));
+        e.last_save_hash = e.compute_entities_hash();
+        e.request_action(PendingAction::GenerateLevel);
+        assert_eq!(e.generate_dialog.extent, Vec2::new(7000.0, 4000.0));
+    }
+
+    // A17 — play mode starts at the level's own spawn when it has one.
+    #[test]
+    fn play_starts_at_the_levels_spawn_when_it_carries_one() {
+        let mut e = an_editor_looking_at(
+            egui::Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(800.0, 600.0)),
+            Vec2::new(800.0, 400.0),
+        );
+        e.level_spawn = Some(Pos2::new(1200.0, 700.0));
+
+        e.start_play();
+
+        assert_eq!(
+            e.play_spawn,
+            Some(Pos2::new(1200.0, 700.0)),
+            "a generated level begins where it was proven to begin, not at the view centre"
+        );
+    }
+
+    #[test]
+    fn play_still_starts_at_the_view_centre_when_the_level_carries_no_spawn() {
+        let canvas = egui::Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(800.0, 600.0));
+        let mut e = an_editor_looking_at(canvas, Vec2::new(800.0, 400.0));
+        assert_eq!(e.level_spawn, None, "a hand-built level has no spawn");
+
+        e.start_play();
+
+        let expected = canvas.center() + Vec2::new(800.0, 400.0);
+        assert_eq!(e.play_spawn, Some(expected), "the existing behaviour is untouched");
+    }
+
+    #[test]
+    fn a_click_during_play_still_moves_the_spawn_on_a_level_that_has_one() {
+        let canvas = egui::Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(800.0, 600.0));
+        let mut e = an_editor_looking_at(canvas, Vec2::ZERO);
+        e.level_spawn = Some(Pos2::new(1200.0, 700.0));
+        e.start_play();
+
+        e.move_play_spawn(Pos2::new(300.0, 250.0), canvas);
+
+        assert_eq!(
+            e.play_spawn,
+            Some(Pos2::new(300.0, 250.0)),
+            "clicking during play moves the spawn as it always did"
+        );
+    }
+
+    #[test]
+    fn a_new_level_clears_the_spawn_and_exit_a_generated_level_brought() {
+        let mut e = a_working_editor();
+        e.level_spawn = Some(Pos2::new(1200.0, 700.0));
+        e.level_exit = Some(Pos2::new(4200.0, 700.0));
+
+        e.new_level();
+
+        assert_eq!(e.level_spawn, None);
+        assert_eq!(e.level_exit, None);
     }
 
     // ── Minimap mouse navigation ─────────────────────────────────────────────

@@ -21,6 +21,12 @@ built-in play mode so a level can be tested without leaving the editor.
 - **Play mode**: drop a controllable character into the level and test it — full movement
   (run, jump, dash, wall slide, wall jump, climb, rope swing) plus combat (katana, orcs, coins, death
   pits, shield). Play never modifies the level.
+- **AI level generation**: describe an area in plain words and have an AI model write a whole
+  Hollow-Knight-style level — chambers, corridors, hazards, enemies and rewards. The editor
+  will not hand you the level until its own play simulation has actually walked a route from
+  the start to the end, so a generated level is always playable. OpenAI by default; point the
+  endpoint at any OpenAI-compatible server (Ollama, LM Studio, llama.cpp, vLLM) to use a model
+  on your own machine instead.
 - **Minimap**: a thumbnail with the current viewport marked. Click or drag on it to jump the view to that part of the level.
 - **Undo/redo**: Cmd/Ctrl+Z and Shift+Cmd/Ctrl+Z.
 - **In-app help**: press F1 for a window listing every key, gesture, tool and menu item.
@@ -90,9 +96,66 @@ reimplementation rather than that game's physics, so the feel is close but not i
 | File → Load Level | Open a level JSON file. |
 | File → Save Level | Write the level JSON file. |
 | File → Exit | Quit; asks whether to save first when there are unsaved changes. |
+| Level → Generate Level with AI… | Have an AI model write a level — OpenAI by default, or a local model by changing the endpoint — proven playable before it is delivered. Asks whether to save first when there are unsaved changes. |
 | Level → Level Size… | Set the level's width and height in pixels; saved with the level. |
 | Play → Play / Stop | Start or stop play mode (same as F5). |
 | Help → Keyboard & Commands | Show the help window. |
+
+### Generating a level with AI
+
+`Level → Generate Level with AI…` asks an AI model to write a whole area.
+
+**Set your API key first.** The editor reads it from the `OPENAI_API_KEY` environment
+variable and nowhere else: it never stores the key, never logs it and never shows it. In the
+terminal you launch the editor from:
+
+```zsh
+read -rs "OPENAI_API_KEY?OpenAI API key: " && export OPENAI_API_KEY && echo
+```
+
+(That form keeps the key out of your shell history.) To keep it across terminals, put it in
+the macOS keychain once and read it from `~/.zshrc`:
+
+```zsh
+security add-generic-password -a "$USER" -s openai-api-key -w
+# then, in ~/.zshrc:
+export OPENAI_API_KEY="$(security find-generic-password -s openai-api-key -w 2>/dev/null)"
+```
+
+It only reaches the editor when you launch it from a terminal, which `cargo run` is. Launched
+from Finder, the editor will correctly report that it found no key.
+
+Then the dialog:
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| Endpoint | `https://api.openai.com/v1` | Any OpenAI-compatible server. Put `http://localhost:11434/v1` here to use a local model instead; a local endpoint needs no key and is sent none. |
+| Model | `gpt-6-astra` | Any model id the endpoint serves. |
+| Chambers | 5 | How many chambers the area should have. |
+| Seed | *(none)* | Passed to endpoints that honour one, so a level can be reproduced. |
+
+The dialog tells you whether it found a key — never the key itself — and `Generate` stays
+unavailable while a needed key is missing, rather than starting a request that can only fail.
+
+**What leaves your machine:** with the default endpoint, your description and the generation
+prompts are sent to OpenAI. Point the endpoint at a local server and nothing leaves at all.
+
+The model writes the level JSON itself, coordinate by coordinate, in staged requests — the
+shape of the area first, then one request per chamber — so the window shows which chamber it
+is on and can be cancelled at any point. Nothing touches your open level until a level is
+ready.
+
+What comes back is checked before you ever see it. Every entity must be one of the editor's
+own tools, and then the editor drives its play simulation from the level's spawn to its
+exit — the real simulation, the one behind play mode — and only a level it can actually walk
+through is delivered. If the route does not work, the model is told exactly where it broke
+and asked again, twice, re-asking only the chamber the route died in. If it still does not
+work, the editor adds the smallest ledges that close the route and tells you where it did so;
+the model's own geometry is never moved or deleted. If even that fails, generation stops and
+your open level is left alone.
+
+A generated level replaces the one you have open, in a single undoable step, so Ctrl+Z puts
+the old one back.
 
 ### Tools
 
@@ -123,12 +186,16 @@ properties are not stored — the consuming game derives them from the entity ty
   "background": null,
   "background_size": [1920.0, 1080.0],
   "level_size": [4000.0, 2000.0],
+  "spawn": [300.0, 1100.0],
+  "exit": [3600.0, 1155.0],
   "entities": [ ... ]
 }
 ```
 
-`level_size` is the level's explicit extent, written when one has been set. It is optional:
-files saved before it existed load unchanged.
+`level_size` is the level's explicit extent, written when one has been set. `spawn` and
+`exit` are where a run begins and where its critical path ends; a generated level carries
+both, a hand-built one carries neither, and play mode starts the character at `spawn` when
+it is there. All three are optional: files saved before they existed load unchanged.
 
 ### Coordinates
 
