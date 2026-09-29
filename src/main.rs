@@ -3213,12 +3213,27 @@ mod editor_state_tests {
     #[test]
     fn the_first_frame_restores_everything_the_editor_remembers() {
         let (mut e, path) = an_editor_with_its_own_config("initial_load");
-        e.save_level_path(&std::path::PathBuf::from("/tmp/no_such_level.json"));
+        // A level that is really there. Pointing at a missing one cannot pin this loader:
+        // `last_level_path` stays unset whether the config was read and the file was gone,
+        // or the loader never ran at all.
+        let level = std::path::PathBuf::from("example_level.json");
+        e.save_level_path(&level);
         e.save_ai_settings(&crate::ai_client::ModelSettings {
             endpoint: "http://localhost:11434/v1".to_string(),
             model: "a-model".to_string(),
             seed: Some(7),
         });
+        // A background that is really there, so the path is remembered rather than skipped
+        // as a file that has gone.
+        let background = std::path::PathBuf::from("src/assets/wall.png");
+        e.save_background_path(&background);
+        // And a pattern whose file exists, for the same reason: the gallery prunes entries
+        // it could not draw.
+        let pattern = std::env::temp_dir()
+            .join(format!("level_editor_test_initial_load_pattern_{}.png", std::process::id()));
+        std::fs::write(&pattern, b"not a real image, but it is there").expect("write the fixture");
+        e.gallery.remember(pattern.to_string_lossy().to_string());
+        e.save_gallery();
 
         let mut fresh = EditorState::default();
         fresh.config_path_override = Some(path.clone());
@@ -3228,12 +3243,27 @@ mod editor_state_tests {
         assert_eq!(fresh.generate_dialog.settings.endpoint, "http://localhost:11434/v1");
         assert_eq!(fresh.generate_dialog.settings.model, "a-model");
         assert_eq!(fresh.generate_dialog.seed_text, "7");
-        // The remembered level path is consulted too. The file does not exist, so nothing is
-        // loaded from it and `last_level_path` stays unset — the point here is that
-        // `initial_load` reads the config at all rather than what it does with a missing file.
-        assert_eq!(fresh.last_level_path, None, "a level that is gone is not loaded");
+        assert_eq!(
+            fresh.last_level_path.as_deref(),
+            Some(level.as_path()),
+            "the remembered level"
+        );
+        // The background, and the pattern gallery. Both were restored by lines this test
+        // claimed to pin and did not: dropping either from `initial_load` left the suite
+        // green, which is the one thing a test written to pin a list must not allow.
+        assert_eq!(
+            fresh.last_background_path.as_deref(),
+            Some(background.as_path()),
+            "the remembered background"
+        );
+        assert_eq!(
+            fresh.gallery.entries(),
+            [pattern.to_string_lossy().to_string()],
+            "and the pattern gallery"
+        );
 
         let _ = std::fs::remove_file(&path);
+        let _ = std::fs::remove_file(&pattern);
     }
 
     #[test]
