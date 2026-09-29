@@ -42,6 +42,8 @@ use entities::{Entity, DrawableEntity, RopeEntity, RopePlacement, ROPE_COLOR};
 mod pattern;
 use pattern::Gallery;
 
+mod quilt;
+
 mod debug_export;
 use debug_export::{write_minimap_debug_json, MinimapDebugSnapshot};
 
@@ -105,6 +107,9 @@ struct EditorState {
     /// Where editor preferences are read and written. `None` means the real per-user
     /// config file; tests point it at a temporary file so they cannot disturb it.
     config_path_override: Option<std::path::PathBuf>,
+    /// Where synthesised pattern tiles are cached. `None` means the real per-user cache
+    /// directory; tests point it at a temporary one.
+    quilt_cache_override: Option<std::path::PathBuf>,
     background_controller: BackgroundImageController,
     background_size: Vec2,
     /// Continuous scroll state (offset + momentum), advanced once per frame.
@@ -200,6 +205,7 @@ impl Default for EditorState {
             gallery_open: false,
             gallery_rect: None,
             config_path_override: None,
+            quilt_cache_override: None,
             background_controller: BackgroundImageController::new(),
             background_size: Vec2::ZERO,
             scroll: ScrollModel::default(),
@@ -473,17 +479,99 @@ impl EditorState {
         }
     }
 
-    /// The texture for `path`, decoding it on first use. `None` once a path has failed,
-    /// which is remembered so a missing image is not retried every frame.
+    /// Where synthesised tiles are kept between runs. Alongside the editor's other
+    /// per-user state; overridden in tests, which keep their tiles in a temporary
+    /// directory rather than the real one.
+    fn quilt_cache_dir(&self) -> Option<std::path::PathBuf> {
+        if let Some(over) = &self.quilt_cache_override {
+            return Some(over.clone());
+        }
+        dirs::cache_dir().map(|d| d.join("rust_game_editor").join("patterns"))
+    }
+
+    /// The image to actually draw a pattern with: the source itself when it already
+    /// tiles cleanly, or a synthesised tile that wraps against itself when it does not.
+    ///
+    /// The tile is built once and kept on disk, so a pattern costs the synthesis only
+    /// the first time it is ever used. Every failure along the way — an unreadable
+    /// source, an unwritable cache, a corrupt cached tile — falls back to the next best
+    /// thing rather than losing the pattern.
+    fn prepared_pattern(&self, path: &str) -> Option<quilt::Rgba> {
+        let source = Self::decode(path)?;
+        if !quilt::needs_quilting(&source) {
+            trace!("pattern_tiles_cleanly path={}", path);
+            return Some(source);
+        }
+
+        let modified = std::fs::metadata(path)
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let key = quilt::cache_key(path, modified, quilt::TILE_SIZE, quilt::ALGORITHM_VERSION);
+        let cached = self.quilt_cache_dir().map(|d| d.join(format!("{key}.png")));
+
+        if let Some(file) = &cached {
+            if let Some(tile) = Self::decode(&file.to_string_lossy()) {
+                trace!("quilt_cache_hit key={}", key);
+                return Some(tile);
+            }
+        }
+
+        // A decline is not a tile. Caching the source under a tile's name would make a
+        // pattern that failed to quilt look, forever after, exactly like one that had.
+        let Some(tile) = quilt::quilt(&source, quilt::TILE_SIZE, quilt::seed_from_key(&key)) else {
+            trace!("quilt_declined path={}", path);
+            return Some(source);
+        };
+        // Recorded rather than acted on: the sharpest short join in the tile against the
+        // sharpest the source already had inside itself. A tile much rougher than its
+        // source is worth knowing about, and a trace says so without the editor quietly
+        // refusing to draw a pattern over it.
+        let (source_local, _) = quilt::worst_local_join(&source, quilt::LOCAL_WINDOW, true);
+        let (tile_local, _) = quilt::worst_local_join(&tile, quilt::LOCAL_WINDOW, false);
+        trace!(
+            "quilt_built key={} {}x{} local_join={:.1} source_interior={:.1}",
+            key, tile.width, tile.height, tile_local, source_local
+        );
+
+        if let Some(file) = &cached {
+            if let Some(parent) = file.parent() {
+                let _ = std::fs::create_dir_all(parent);
+            }
+            let flat: Vec<u8> = tile.pixels.iter().flat_map(|p| *p).collect();
+            if let Some(buffer) =
+                image::RgbaImage::from_raw(tile.width as u32, tile.height as u32, flat)
+            {
+                let _ = buffer.save(file);
+            }
+        }
+        Some(tile)
+    }
+
+    /// An image file as plain rows of RGBA, or `None` when it cannot be read or decoded.
+    fn decode(path: &str) -> Option<quilt::Rgba> {
+        let rgba = image::open(path).ok()?.to_rgba8();
+        quilt::Rgba::new(
+            rgba.width() as usize,
+            rgba.height() as usize,
+            rgba.pixels().map(|p| [p[0], p[1], p[2], p[3]]).collect(),
+        )
+    }
+
+    /// The texture for `path`, prepared and uploaded on first use and remembered after.
+    /// A `None` records a path that could not be read or decoded, so a broken pattern is
+    /// attempted once rather than on every frame.
     fn pattern_texture(&mut self, ctx: &egui::Context, path: &str) -> Option<egui::TextureHandle> {
         if let Some(cached) = self.pattern_textures.get(path) {
             return cached.clone();
         }
-        let loaded = image::open(path).ok().map(|img| {
-            let rgba = img.to_rgba8();
-            let size = [rgba.width() as usize, rgba.height() as usize];
-            let pixels: Vec<Color32> = rgba
-                .pixels()
+        let loaded = self.prepared_pattern(path).map(|prepared| {
+            let size = [prepared.width, prepared.height];
+            let pixels: Vec<Color32> = prepared
+                .pixels
+                .iter()
                 .map(|c| Color32::from_rgba_unmultiplied(c[0], c[1], c[2], c[3]))
                 .collect();
             let image_data = egui::ImageData::Color(egui::ColorImage { size, pixels }.into());
@@ -3270,6 +3358,177 @@ mod editor_state_tests {
         assert_eq!(written["recent_patterns"], serde_json::json!(["/tmp/keep.png"]));
 
         let _ = std::fs::remove_file(e.config_file_path());
+    }
+
+    // ── Preparing a pattern for drawing ──────────────────────────────────────
+
+    fn a_temp_dir(tag: &str) -> std::path::PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let dir = std::env::temp_dir().join(format!("level_editor_{tag}_{unique}"));
+        std::fs::create_dir_all(&dir).expect("create the temp dir");
+        dir
+    }
+
+    /// Deterministic value noise with a real avalanche, so the fixtures below are
+    /// textures rather than nearly flat fields.
+    fn noise(x: usize, y: usize) -> u8 {
+        let mut h = (x as u64)
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15)
+            ^ (y as u64).wrapping_mul(0xc2b2_ae3d_27d4_eb4f);
+        h ^= h >> 33;
+        h = h.wrapping_mul(0xff51_afd7_ed55_8ccd);
+        h ^= h >> 29;
+        (h >> 32) as u8
+    }
+
+    /// A picture with a drift across it, so its edges are unalike: it needs work.
+    ///
+    /// Sized like a real texture relative to the tile it becomes. A much smaller source
+    /// would be a harsher test than anything the editor meets — blowing 64 pixels up to
+    /// 512 asks the synthesis to invent eight times more than four times — and would be
+    /// calibrating against a case that does not occur.
+    fn write_a_seamy_png(path: &std::path::Path) {
+        let (w, h) = (128u32, 128u32);
+        let mut buf = image::RgbaImage::new(w, h);
+        for (x, y, p) in buf.enumerate_pixels_mut() {
+            let detail = noise(x as usize, y as usize) % 40;
+            let ramp = (x * 200 / w) as u8;
+            let v = detail.saturating_add(ramp);
+            *p = image::Rgba([v, v, v, 255]);
+        }
+        buf.save(path).expect("write the fixture");
+    }
+
+    /// The same detail folded about the middle, so opposite edges match: it does not.
+    fn write_a_seamless_png(path: &std::path::Path) {
+        let (w, h) = (64u32, 64u32);
+        let mut buf = image::RgbaImage::new(w, h);
+        for (x, y, p) in buf.enumerate_pixels_mut() {
+            let fx = x.min(w - 1 - x) as usize;
+            let fy = y.min(h - 1 - y) as usize;
+            let v = noise(fx, fy) % 40;
+            *p = image::Rgba([v, v, v, 255]);
+        }
+        buf.save(path).expect("write the fixture");
+    }
+
+    #[test]
+    fn a_pattern_that_needs_work_is_quilted_once_and_then_read_back_from_the_cache() {
+        let dir = a_temp_dir("quilt_cache");
+        let source = dir.join("seamy.png");
+        write_a_seamy_png(&source);
+
+        let mut e = EditorState::default();
+        e.quilt_cache_override = Some(dir.join("cache"));
+
+        let first = e.prepared_pattern(&source.to_string_lossy()).expect("a tile was produced");
+        assert_eq!(
+            (first.width, first.height),
+            (quilt::TILE_SIZE, quilt::TILE_SIZE),
+            "the source was quilted into a tile rather than used as it was"
+        );
+
+        let cached: Vec<_> = std::fs::read_dir(dir.join("cache"))
+            .expect("the cache directory was created")
+            .filter_map(Result::ok)
+            .collect();
+        assert_eq!(cached.len(), 1, "and exactly one tile was written");
+
+        // Replace the cached tile with something unmistakable. If the next call rebuilds
+        // instead of reading, it cannot come back.
+        let marker = image::RgbaImage::from_pixel(8, 8, image::Rgba([1, 2, 3, 255]));
+        marker.save(cached[0].path()).expect("overwrite the cached tile");
+
+        let second = e.prepared_pattern(&source.to_string_lossy()).expect("still prepared");
+        assert_eq!(
+            (second.width, second.height),
+            (8, 8),
+            "the second call read the cache rather than quilting again"
+        );
+        assert_eq!(second.pixels[0], [1, 2, 3, 255]);
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pattern_that_already_tiles_is_used_as_it_is_and_nothing_is_cached() {
+        let dir = a_temp_dir("quilt_clean");
+        let source = dir.join("clean.png");
+        write_a_seamless_png(&source);
+
+        let mut e = EditorState::default();
+        e.quilt_cache_override = Some(dir.join("cache"));
+
+        let prepared = e.prepared_pattern(&source.to_string_lossy()).expect("prepared");
+
+        assert_eq!(
+            (prepared.width, prepared.height),
+            (64, 64),
+            "the picture already tiles, so it is drawn exactly as it is"
+        );
+        assert!(
+            !dir.join("cache").exists(),
+            "and nothing was synthesised, so there is nothing to cache"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pattern_the_synthesis_declines_is_used_as_it_is_and_nothing_is_cached() {
+        // It needs quilting and cannot be quilted: too small to offer a choice of
+        // patches. It must still be drawn, from its own pixels, and nothing may be
+        // written to the cache — a declined synthesis stored under a tile's name would
+        // look ever after exactly like one that succeeded.
+        let dir = a_temp_dir("quilt_declined");
+        let source = dir.join("tiny_seamy.png");
+        let (w, h) = (18u32, 18u32);
+        let mut buf = image::RgbaImage::new(w, h);
+        for (x, y, p) in buf.enumerate_pixels_mut() {
+            let detail = noise(x as usize, y as usize) % 70;
+            let drift = (x * 110 / w) as u8;
+            let v = detail.saturating_add(drift);
+            *p = image::Rgba([v, v, v, 255]);
+        }
+        buf.save(&source).expect("write the fixture");
+
+        let mut e = EditorState::default();
+        e.quilt_cache_override = Some(dir.join("cache"));
+
+        let prepared = e.prepared_pattern(&source.to_string_lossy()).expect("still drawn");
+
+        assert_eq!((prepared.width, prepared.height), (18, 18), "its own pixels, unchanged");
+        assert!(
+            !dir.join("cache").exists(),
+            "and nothing cached, because nothing was synthesised"
+        );
+
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_pattern_that_cannot_be_decoded_prepares_nothing() {
+        let dir = a_temp_dir("quilt_broken");
+        let source = dir.join("not_really.png");
+        std::fs::write(&source, b"this is not a png").expect("write the fixture");
+
+        let mut e = EditorState::default();
+        e.quilt_cache_override = Some(dir.join("cache"));
+
+        assert!(
+            e.prepared_pattern(&source.to_string_lossy()).is_none(),
+            "an undecodable source yields nothing, so the polygon falls back to its outline"
+        );
+        assert!(
+            e.prepared_pattern("/nowhere/at/all.png").is_none(),
+            "and so does a path that is not there"
+        );
+        assert!(!dir.join("cache").exists(), "with nothing cached either way");
+
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]
