@@ -204,6 +204,14 @@ impl HelpContent {
                 "Quit; asks whether to save first when there are unsaved changes.",
             ),
             HelpEntry::new(
+                "Level \u{2192} Generate Level with AI\u{2026}",
+                "Describe an area and have an AI model write it \u{2014} OpenAI by default, \
+                 or a model on your own machine by changing the endpoint. The level is \
+                 replaced only once the play simulation has walked a route through it. Needs \
+                 OPENAI_API_KEY in the environment for OpenAI; a local endpoint needs no key. \
+                 Asks whether to save first when there are unsaved changes.",
+            ),
+            HelpEntry::new(
                 "Level \u{2192} Level Size\u{2026}",
                 "Set the level's width and height in pixels; saved with the level.",
             ),
@@ -219,7 +227,7 @@ impl HelpContent {
                 "Level \u{2192} Patterns\u{2026}",
                 "Show the twelve patterns used most recently; click one to apply it to the selected polygon.",
             ),
-            HelpEntry::new("Play \u{2192} Play / Stop", "Start or stop play mode; the character starts at the centre of the visible canvas (same as F5)."),
+            HelpEntry::new("Play \u{2192} Play / Stop", "Start or stop play mode; the character starts where the level says it begins, or at the centre of the visible canvas (same as F5)."),
             HelpEntry::new("Help \u{2192} Keyboard & Commands", "Show this window."),
         ];
 
@@ -369,6 +377,7 @@ mod tests {
                 "File → Load Level",
                 "File → Save Level",
                 "File → Exit",
+                "Level → Generate Level with AI…",
                 "Level → Level Size…",
                 "Level → Blocker Pattern…",
                 "Level → Clear Pattern",
@@ -383,6 +392,20 @@ mod tests {
         assert!(exit.effect.contains("unsaved"), "Exit must mention the unsaved-changes prompt");
         let new = c.file.iter().find(|e| e.label.ends_with("New Level")).expect("New Level is listed");
         assert!(new.effect.contains("unsaved"), "New Level must mention it too");
+        let generate = c
+            .file
+            .iter()
+            .find(|e| e.label.contains("Generate"))
+            .expect("Generate is listed");
+        assert!(generate.effect.contains("unsaved"), "Generate replaces the level, so it must too");
+        assert!(
+            generate.effect.contains("OPENAI_API_KEY"),
+            "the help must say where the key comes from"
+        );
+        assert!(
+            generate.effect.contains("your own machine"),
+            "and that a local model is still an option"
+        );
     }
 
     #[test]

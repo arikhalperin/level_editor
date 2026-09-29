@@ -46,7 +46,22 @@ Root object for a level file.
 | `version` | string | Format version (currently "1.0") |
 | `background` | string? | Optional path to background image |
 | `background_size` | [f32; 2]? | Optional background dimensions [width, height] |
+| `level_size` | [f32; 2]? | Optional explicit level extent [width, height] |
+| `spawn` | [f32; 2]? | Optional: where a run of this level begins |
+| `exit` | [f32; 2]? | Optional: where the level's critical path ends |
 | `entities` | LevelEntity[] | Array of entities in the level |
+
+### Spawn and exit
+
+`spawn` and `exit` are optional and absent from every level built by hand: the editor's
+play mode starts the character at the centre of the visible canvas unless the level says
+otherwise. A level written by the editor's AI generation carries both, because the editor
+proves a route from the spawn to the exit before it will deliver the level at all, and
+recording them is what lets that route be re-proved later.
+
+Both fields have a serde default, so a level file written before they existed loads
+unchanged, and a consumer that does not know them can ignore them without harm. A game
+that does know them should start the player at `spawn` when it is present.
 
 ### LevelEntity
 

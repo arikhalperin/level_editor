@@ -18,6 +18,16 @@ pub struct LevelData {
     /// `LEVEL_JSON_VIEWPORT_HEIGHT = 720.0`, which is wrong for any other height.
     #[serde(default)]
     pub level_size: Option<[f32; 2]>,
+    /// Where a run of this level begins, in world pixels. Optional and defaulted exactly
+    /// as `level_size` is, so a file written before this field loads unchanged: a level
+    /// placed by hand simply has no spawn and play mode keeps starting the character at
+    /// the centre of the visible canvas.
+    #[serde(default)]
+    pub spawn: Option<[f32; 2]>,
+    /// Where the critical path ends, in world pixels. Written by AI generation so the
+    /// route it proved can be re-proved later; absent in every hand-built level.
+    #[serde(default)]
+    pub exit: Option<[f32; 2]>,
     /// All entities in the level
     pub entities: Vec<LevelEntity>,
 }
@@ -29,6 +39,8 @@ impl Default for LevelData {
             background: None,
             background_size: None,
             level_size: None,
+            spawn: None,
+            exit: None,
             entities: Vec::new(),
         }
     }
@@ -74,6 +86,8 @@ mod tests {
             background: None,
             background_size: Some([25600.0, 720.0]),
             level_size: Some([4000.0, 3000.0]),
+            spawn: None,
+            exit: None,
             entities: vec![],
         };
         let json = serde_json::to_string(&data).expect("serialises");
@@ -171,5 +185,49 @@ mod tests {
             LevelEntity::Polygon { pattern, .. } => assert_eq!(*pattern, None),
             other => panic!("expected a polygon, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn spawn_and_exit_round_trip_through_save_and_load() {
+        let data = LevelData {
+            spawn: Some([1200.0, 700.0]),
+            exit: Some([5200.0, 2400.0]),
+            ..LevelData::default()
+        };
+        let json = serde_json::to_string(&data).expect("serialises");
+        let back: LevelData = serde_json::from_str(&json).expect("deserialises");
+        assert_eq!(back.spawn, Some([1200.0, 700.0]), "the spawn came back");
+        assert_eq!(back.exit, Some([5200.0, 2400.0]), "and so did the exit");
+    }
+
+    #[test]
+    fn a_file_written_before_spawn_and_exit_existed_loads_unchanged() {
+        // Exactly the shape written before these fields existed: no keys at all.
+        let json = r#"{
+            "version": "1.0",
+            "background": null,
+            "background_size": [1920.0, 1080.0],
+            "level_size": [4000.0, 3000.0],
+            "entities": []
+        }"#;
+        let data: LevelData = serde_json::from_str(json).expect("older files must still load");
+        assert_eq!(data.spawn, None, "a missing key means no spawn");
+        assert_eq!(data.exit, None, "a missing key means no exit");
+        assert_eq!(data.level_size, Some([4000.0, 3000.0]), "and nothing else is disturbed");
+    }
+
+    #[test]
+    fn an_explicit_null_spawn_or_exit_loads_as_none() {
+        let json = r#"{"version":"1.0","background":null,"background_size":null,
+                       "level_size":null,"spawn":null,"exit":null,"entities":[]}"#;
+        let data: LevelData = serde_json::from_str(json).expect("null must be accepted");
+        assert_eq!(data.spawn, None);
+        assert_eq!(data.exit, None);
+    }
+
+    #[test]
+    fn default_has_no_spawn_or_exit() {
+        assert_eq!(LevelData::default().spawn, None);
+        assert_eq!(LevelData::default().exit, None);
     }
 }

@@ -1,0 +1,998 @@
+schema: comet.native.v4
+name: ai-level-generation
+language: en
+phase: archive
+status: done
+state_version: 49
+brief: brief.md
+shape_confirmation_hash: b39e152bc49888e286f1bb1b8657a9dadcef99e6ff9e507d8886e3515facc6a5
+spec_changes:
+  - capability: ai-level-generation
+    operation: create
+    source: specs/ai-level-generation/spec.md
+workspace:
+  isolation: worktree
+  change_branch: comet/ai-level-generation
+  target_branch: main
+  finish: keep
+loop:
+  stage: done
+  goal_cycle: 3
+  iteration: 9
+  attempt: 1
+  retry_epoch: 0
+  failed_iteration_count: 1
+  no_progress_count: 0
+  execution_failure_count: 0
+  previous_unresolved_ids: []
+  next_action: null
+acceptance:
+  - id: A1
+    source: brief.md
+    text: A1 — With no server listening on the configured endpoint, Generate fails
+      within the connection timeout with a message naming the endpoint and the
+      cause; the entities, level size, background and unsaved-changes state of
+      the open level are all unchanged.
+    result: passed
+    reason:
+      text: Connect failure names the exact endpoint and a non-empty cause inside the
+        timeout; on any Err the dialog applies nothing, so the open level is
+        untouched.
+      truncated: false
+  - id: A2
+    source: brief.md
+    text: "A2 — The model client sends `POST {endpoint}/chat/completions` with the
+      configured model name and, when a key is available, an `Authorization:
+      Bearer` header carrying it; the endpoint and model settings survive a save
+      and reload of the editor config."
+    result: passed
+    reason:
+      text: The socket test asserts the real request line, Host, model, messages,
+        stream, seed and response_format; request_head asserts the exact bearer
+        line; and the endpoint, model and seed come back into a fresh
+        EditorState from a real config file.
+      truncated: false
+  - id: A3
+    source: brief.md
+    text: "A3 — A reply wrapped in prose or a ```json fence still parses: the first
+      balanced JSON object is extracted and used."
+    result: passed
+    reason:
+      text: parse_reply tries each candidate start; prose, both fence forms, a brace
+        in prose, braces and escaped quotes in strings, top-level arrays and
+        no-JSON are all covered.
+      truncated: false
+  - id: A4
+    source: brief.md
+    text: 'A4 — A reply naming an entity outside the toolbox vocabulary (for example
+      `bitmap_name: "spike_wall"`) is rejected, that chamber is re-asked, and no
+      unknown name ever reaches the canvas.'
+    result: passed
+    reason:
+      text: "Invented names are rejected wherever written — under bitmap_name, under
+        another name key, and with vertices present — and the chamber is
+        re-asked. The load-bearing half holds by construction rather than by
+        test: the only strings that can become a delivered name are a type that
+        is already in the vocabulary, a value read_known has proved is in it, a
+        read_named value re-checked against it, or the literal polygon_tool, and
+        parse_entities is the only path from model JSON to an entity, with
+        repair adding only wall_tool ledges."
+      truncated: false
+  - id: A5
+    source: brief.md
+    text: A5 — Structural validation rejects, and re-asks for, a polygon with fewer
+      than three vertices, a non-finite or out-of-bounds coordinate, a
+      non-positive bitmap size, and a `rope_tool` entry whose length is below
+      60.
+    result: passed
+    reason:
+      text: Fewer than three vertices, non-finite including quoted, out of bounds,
+        non-positive size, rope thickness and rope length are all still hard
+        errors, and the null-or-empty vertices narrowing was traced not to
+        bypass any of them.
+      truncated: false
+  - id: A6
+    source: brief.md
+    text: "A6 — Generation runs on a worker thread: while a generation is in flight
+      the editor keeps repainting and the progress panel reports the current
+      stage; Cancel ends it and leaves the open level untouched."
+    result: passed
+    reason:
+      text: The worker is a real thread, the dialog repaints every frame while it
+        runs, a cancelled otherwise-succeeding transcript yields Cancelled with
+        no level, and a dead worker is reported as Worker rather than Cancelled.
+      truncated: false
+  - id: A7
+    source: brief.md
+    text: A7 — The traversal prover, given a hand-built level with a 200 px gap
+      between two ledges at equal height, proves the route and returns an input
+      sequence that the simulation replays to the exit.
+    result: passed
+    reason:
+      text: The 200 px gap is proven and the returned route replays to within the
+        arrival radius.
+      truncated: false
+  - id: A8
+    source: brief.md
+    text: A8 — The prover, given the same level with the gap widened to 1400 px and
+      no wall to climb and no rope, reports the route unprovable and names the
+      ledge the route dies on.
+    result: passed
+    reason:
+      text: The 1400 px gap is unprovable with the frontier pinned to the end of the
+        left ledge, the nearest unreached foothold on the far ledge, and explain
+        carrying the ledge, the distance and the dash figure.
+      truncated: false
+  - id: A9
+    source: brief.md
+    text: "A9 — The prover proves a route that requires each advanced move in turn:
+      a dash-only gap (between `JUMP_HEIGHT`-reach and `DASH_DISTANCE` 450), a
+      wall-jump-only shaft, and a climb-only face of `wall_tool`."
+    result: passed
+    reason:
+      text: Dash proven with the full repertoire and unprovable with every dash
+        primitive removed; the wall-jump shaft proven and unprovable with its
+        faces deleted; the climb case delivered as the brief's own recorded
+        substitution.
+      truncated: false
+  - id: A10
+    source: brief.md
+    text: A10 — A model reply whose chamber fails the proof is re-asked at most
+      twice, and the feedback sent back names the failing ledge and the distance
+      to the nearest foothold.
+    result: passed
+    reason:
+      text: Exactly two retries then repair, only the chamber the route died in
+        re-asked, and the retry prompt carrying the rejection, the dying ledge,
+        the nearest-foothold distance and the dash figure.
+      truncated: false
+  - id: A11
+    source: brief.md
+    text: A11 — When retries are exhausted, deterministic repair edits the geometry
+      until the simulation proves the route, and the delivered level's route is
+      proven by the same prover that rejected the original.
+    result: passed
+    reason:
+      text: repair re-proves and replays after every edit and returns only on a route
+        that replays; the delivered level is confirmed by the same prover that
+        rejected the original, and nothing the model wrote is moved.
+      truncated: false
+  - id: A12
+    source: brief.md
+    text: A12 — When repair cannot succeed within its budget, generation fails with
+      that reason and the open level is untouched; no partially repaired level
+      is ever delivered.
+    result: passed
+    reason:
+      text: Out of budget yields Unprovable naming the attempt count and the last
+        failure; generate propagates it so nothing is applied and no partially
+        repaired level exists.
+      truncated: false
+  - id: A13
+    source: brief.md
+    text: "A13 — Accepting a generated level replaces the current one in a single
+      undoable step: one Ctrl+Z restores the previous entities, level size and
+      spawn exactly."
+    result: passed
+    reason:
+      text: One undo-stack push, and one undo restores entities, level size, spawn,
+        exit and the replaced level's file path.
+      truncated: false
+  - id: A14
+    source: brief.md
+    text: A14 — With unsaved changes, Generate opens the existing Save / Discard /
+      Cancel confirmation; Cancel leaves the level and the generation request
+      untouched.
+    result: passed
+    reason:
+      text: Unsaved changes set the pending action without opening the window; a clean
+        level opens it at once; the prompt names the action.
+      truncated: false
+  - id: A15
+    source: brief.md
+    text: A15 — The `Generate` menu item is disabled while play mode is running,
+      with the same hover explanation `New Level` uses.
+    result: passed
+    reason:
+      text: The item is gated on play.is_none() with hover text byte-identical to New
+        Level and Load Level. The one item resting on reading rather than a
+        check, as egui menus are not exercised headlessly here.
+      truncated: false
+  - id: A16
+    source: brief.md
+    text: A16 — `LevelData` round-trips `spawn` and `exit`; a level file written
+      before this change (no `spawn`, no `exit` keys) loads with both `None` and
+      no error, and an explicit `null` for either loads as `None`.
+    result: passed
+    reason:
+      text: Round trip, a file with neither key, explicit nulls and Default; both
+        fields serde-defaulted exactly as level_size.
+      truncated: false
+  - id: A17
+    source: brief.md
+    text: A17 — Pressing Play on a level whose `spawn` is (1200, 700) starts the
+      character at (1200, 700) rather than the centre of the visible canvas; on
+      a level with no `spawn` the view-centre behaviour is unchanged; a click
+      during play still moves the spawn; and `New Level` clears it.
+    result: passed
+    reason:
+      text: start_play prefers the level's spawn; all four clauses tested, and load
+        and save carry both fields.
+      truncated: false
+  - id: A18
+    source: brief.md
+    text: A18 — An end-to-end generation driven by a recorded model transcript (no
+      live server) produces a level whose every entity is in the toolbox
+      vocabulary, whose `spawn` and `exit` are set, whose `level_size` matches
+      the extent used, and whose route the prover confirms.
+    result: passed
+    reason:
+      text: The transcript run asserts seven in-vocabulary entities, spawn, exit and
+        level_size, the model's own work, a non-empty route, the staged
+        requests, the re-proof and replay of the delivered level, and that
+        repair never ran.
+      truncated: false
+  - id: A19
+    source: brief.md
+    text: "A19 — The defaults are OpenAI's: a fresh config yields endpoint
+      `https://api.openai.com/v1` and model `gpt-6-astra`, and `Generate` is
+      available without the user typing a model name. An endpoint pointed at
+      `http://localhost:11434/v1` is still accepted and still drives a local
+      server over plain HTTP."
+    result: passed
+    reason:
+      text: Defaults are OpenAI's and are asserted as a struct and through a fresh
+        config; the prefilled model means nothing must be typed; a remembered
+        localhost endpoint survives, needs no key, and its plain-HTTP path is
+        driven against a real socket.
+      truncated: false
+  - id: A20
+    source: brief.md
+    text: A20 — An `https://` endpoint is accepted rather than refused, and a
+      request to one is made over TLS. Offline this is asserted against a local
+      TLS listener; the live case is A23.
+    result: passed
+    reason:
+      text: A real rustls handshake against a local listener dialled by the name its
+        certificate is for, with a proper negative control where the same
+        listener serves the same good response and only trust differs, failing
+        on the certificate. No verification bypass exists in shipping code.
+      truncated: false
+  - id: A21
+    source: brief.md
+    text: "A21 — The API key is read from `OPENAI_API_KEY` and never persisted:
+      after a generation, the editor's config file contains no value matching
+      the key, and neither the key nor any `Authorization` header value appears
+      in any log line the editor emits."
+    result: passed
+    reason:
+      text: The key is read only from the environment and rendered only into the
+        request head; the written config is asserted to hold no key field and no
+        match for the live key; and a TRACE subscriber over a failing request
+        made with a key in hand finds neither the key nor 'bearer' in the logs
+        or the user-facing error.
+      truncated: false
+  - id: A22
+    source: brief.md
+    text: A22 — With no `OPENAI_API_KEY` set and an endpoint that requires one,
+      `Generate` fails before any request is sent, with a message naming the
+      variable; the open level is untouched. With a localhost endpoint and no
+      key, no key is required and no `Authorization` header is sent.
+    result: passed
+    reason:
+      text: MissingKey is returned before any socket is opened, naming the variable
+        and offering the localhost alternative; the dialog also refuses to
+        start; and every loopback spelling is sent no header.
+      truncated: false
+  - id: A23
+    source: brief.md
+    text: "A23 — A live smoke test against OpenAI, run with the user's own key: one
+      generation produces a level whose route the prover confirms. This is the
+      only acceptance item that leaves the machine and the only one that cannot
+      be run offline; it must be recorded as actually run or as not run, never
+      assumed."
+    result: passed
+    reason:
+      text: "Run live five times, passing each time; most recently 183.8s on the
+        shipped default gpt-6-astra after this fix, with 36 entities, a 5-move
+        route and nothing repaired or skipped. An earlier run on the same model
+        exercised the retry path for real: the proof rejected the first attempt,
+        the failure went back naming the exact ledge, only the offending chamber
+        was re-asked, and the second attempt passed. Provenance stated plainly:
+        the Verifier audited the harness in full and found it sound — it refuses
+        to run without a key with an explicit note that it must never be
+        reported as passed unrun, refuses an endpoint that needs no key so a
+        loopback stub cannot fake a pass, defaults to the shipped endpoint and
+        model, asserts a non-empty level and a non-zero route before anything
+        could mask them, and re-proves and replays the delivered route — but did
+        not re-run it, being forbidden to spend the user's money."
+      truncated: false
+  - id: A24
+    source: brief.md
+    text: A24 — The outline request asks for a connection point between each pair of
+      adjoining chambers, and each chamber request states the entry and exit
+      points that chamber must put floor at. A recorded transcript whose
+      chambers meet at their stated connection points produces a level the
+      prover confirms **without any repair**, and the neighbouring floors at
+      each connection point are within a jumpable step of one another.
+    result: passed
+    reason:
+      text: The outline request asks for connections with the shape shown, explains
+        why, and states the reachability rule; parse_outline enforces it,
+        rejecting no connections, self-joins, duplicate doorways and any chamber
+        unreachable from the first by breadth-first search. Each chamber is told
+        its own doorways, the neighbour beyond each and the continuous-floor
+        requirement, all from the single doorways definition. The well-connected
+        transcript generates with neither Repairing nor Retrying entered and the
+        floors either side of the doorway within a jumpable step.
+      truncated: false
+builder_handoff:
+  candidate_id: 6fad0548-5bd2-4510-b100-e98ab93f55c4
+  identity_provider: skill-coordinated
+  builder_execution_ref: skill-coordinated:builder:0f5c8bf0-9056-47ba-8458-3243b11ca9f3
+  iteration: 9
+  summary:
+    text: >-
+      Iteration 12: the read_named defect, which the user asked to have fixed
+      before archiving. The three documentation inaccuracies are left as
+      recorded known limitations, by the user's decision.
+
+
+      THE DEFECT. read_named took the first key that was present rather than the
+      first whose value meant anything, so an entity giving both a human label
+      and the real answer — {"name": "spiked pit", "sprite": "death_trap_tool"}
+      — was read for the label and the answer was never consulted. That mattered
+      twice over: without vertices the entity was rejected as carrying an
+      invented name, condemning a chamber that had named itself perfectly well;
+      with vertices it looked like something that claimed to be no sprite at
+      all, so the vertices decided the kind and a death trap became a solid
+      platform. The second is the one that matters, because the route proof can
+      never catch it: added floor only ever makes a route easier, so a hazard
+      turned into geometry would have shipped in silence.
+
+
+      THE FIX. A new read_known takes the first key whose value is actually in
+      the vocabulary, and read_named is kept for saying what was found when
+      nothing does — so an invented name is still reported and A4 is untouched.
+      The sprite lookup now tries read_known first and falls back to read_named
+      only for the error message; claims_a_sprite uses read_known, so a label
+      can no longer hide a real name from the kind decision. The polygon-type
+      lookup already preferred a real type by hand and now says so with the same
+      helper, which also fixes the matching downgrade there: a polygon carrying
+      "kind": "decoration" alongside "tool": "wall_tool" keeps its climbability
+      instead of falling back to polygon_tool.
+
+
+      Four tests: three spellings of a label beside a real name, the labelled
+      hazard carrying vertices that must stay a hazard, and the polygon that
+      must keep its type. The last of those fails loudly with a message naming
+      what went wrong, since a silent conversion is the failure mode.
+
+
+      LIVE: a fifth consecutive passing run on the shipped default after the fix
+      — 183.8s, five chambers, 36 entities, a 5-move route, every entity the
+      model's own work.
+    truncated: false
+  addressed_acceptance_ids:
+    - A1
+    - A2
+    - A3
+    - A4
+    - A5
+    - A6
+    - A7
+    - A8
+    - A9
+    - A10
+    - A11
+    - A12
+    - A13
+    - A14
+    - A15
+    - A16
+    - A17
+    - A18
+    - A19
+    - A20
+    - A21
+    - A22
+    - A23
+    - A24
+  checks:
+    - name:
+        text: cargo test
+        truncated: false
+      result: passed
+      note:
+        text: 343 passed, 0 failed, 1 ignored (A23, by design), plus 1 integration test.
+          Three more than the last candidate.
+        truncated: false
+    - name:
+        text: cargo build
+        truncated: false
+      result: passed
+      note:
+        text: Clean; no warnings from the files this change touches.
+        truncated: false
+    - name:
+        text: A23 live smoke test against OpenAI
+        truncated: false
+      result: passed
+      note:
+        text: "Five live runs, all passing. After this fix, on the shipped default
+          gpt-6-astra: 183.8s, 36 entities, 5-move route, nothing repaired or
+          skipped. Earlier on the same model: 157.1s (with the proof rejecting
+          the first attempt and the per-chamber retry then succeeding) and
+          145.3s. On gpt-5.6-terra: 573.0s and 469.2s."
+        truncated: false
+  checks_truncated: false
+  known_limits:
+    - text: "Left unfixed by the user's decision, all documentation rather than
+        behaviour: the spec's repair prose promises lowering or extending ledges
+        and narrowing gaps while the code only adds stepping stones; the brief's
+        A9 parenthetical 'between JUMP_HEIGHT-reach and DASH_DISTANCE 450' is
+        arithmetically wrong, since a running jump clears about 800 px, and the
+        test documents the real figures; and the spec says requests ask for
+        JSON-schema-constrained output where the code sends JSON mode."
+      truncated: false
+    - text: Five successful live runs, one prompt, one model family. Other prompts are
+        untried.
+      truncated: false
+    - text: Nobody has played a generated level. Each is proven completable; whether
+        any is good is untested.
+      truncated: false
+    - text: The skipped-entity path has never fired live; all five runs skipped
+        nothing.
+      truncated: false
+    - text: A sprite that names itself and carries a malformed vertex list is accepted
+        with the vertices discarded rather than rejected — the deliberate trade
+        that protects hazards from becoming floor.
+      truncated: false
+    - text: "A latent prover and play-mode divergence on rope length:
+        Entity::from_level_entity clamps to ROPE_MIN_LENGTH while
+        repair::world_of does not, and they agree today only because the
+        constants are equal and validation rejects shorter ropes. Nothing ties
+        them together."
+      truncated: false
+    - text: A15, and the open-level-untouched halves of A1 and A12, rest on code
+        inspection.
+      truncated: false
+    - text: "Still accepted rather than fixed: an empty chamber entity list is
+        accepted, the pre-search settle is not bounds-checked, the
+        duplicate-doorway tolerance is arbitrary, a doorway is not checked to
+        lie on a shared edge, chamber-rect containment is prompted but not
+        enforced, and response_format is droppable."
+      truncated: false
+  known_limits_truncated: false
+  review: null
+  submitted_at: 2026-09-28T16:16:21.098Z
+blockers: []
+verification:
+  candidate_id: 6fad0548-5bd2-4510-b100-e98ab93f55c4
+  identity_provider: skill-coordinated
+  verifier_execution_ref: skill-coordinated:verifier:00c9e8a3-539b-42d2-abd6-4b1cc2b3552f
+  iteration: 9
+  attempt: 1
+  assurance: skill-coordinated
+  verdict: pass
+  checks:
+    - id: cargo-test
+      name:
+        text: cargo test
+        truncated: false
+      argv_display:
+        - text: test
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 15693
+    - id: cargo-build
+      name:
+        text: cargo build
+        truncated: false
+      argv_display:
+        - text: build
+          truncated: false
+      argv_truncated: false
+      cwd_ref: .
+      status: passed
+      exit_code: 0
+      duration_ms: 435
+  summary:
+    text: "All 24 acceptance items pass, with no new correctness bug from the fix
+      and nothing previously passing damaged. The suite was reproduced against
+      this tree: 343 passed, 0 failed, 1 ignored — the ignored one being A23,
+      the only #[ignore] in the tree. The read_known fix was hand-traced across
+      every case asked for plus roughly fifteen adversarial variants: a label no
+      longer hides a real sprite name, a labelled hazard carrying vertices stays
+      a hazard rather than becoming a platform, an invented name is still
+      rejected wherever it is written, a polygon keeps its climbability when a
+      label shadows its type, and the original mislabelled floor is still read
+      as geometry. A4's guarantee that no unknown name reaches the canvas was
+      re-derived by construction rather than by test, by enumerating every
+      entity construction site and confirming parse_entities is the only path
+      from model JSON to an entity. A23 is recorded as passed on five live runs
+      with the harness independently audited and found unfakeable by the code
+      under test. The remaining risks are low severity, and the two that are
+      behaviour deltas from this fix both fail in the safe direction."
+    truncated: false
+  risks:
+    - text: 'Inherent to the fix and accepted: in a self-contradicting reply an
+        out-of-vocabulary word is ignored rather than rejected whenever another
+        key holds a real one, so {"bitmap_name": "spike_wall", "sprite":
+        "coin_tool"} becomes a coin. This is the unavoidable dual of preferring
+        the vocabulary value, which is what fixes the hazard-into-platform bug.
+        The blast radius is small: the chosen value is always a word the model
+        literally wrote, the two vocabularies are disjoint, and every polygon
+        type is solid, so the delivered level is the one the prover proved.'
+      truncated: false
+    - text: "Residual and pre-existing, unchanged by this fix: an entity that declares
+        itself a bitmap, carries vertices and names no vocabulary word anywhere
+        still becomes a plain polygon, so an intended hazard could become floor
+        where nothing in the code could know what was meant. Closing it would
+        mean rejecting a declared bitmap that has a position or size instead of
+        re-kinding it."
+      truncated: false
+    - text: The error message on a rejected name blames the first name key present
+        rather than the invented word, so an entity with a label under an
+        earlier key is rejected citing the label. Mitigated by bitmap_name being
+        first in the key list and by the message listing the four legal sprites,
+        so the retry is still actionable.
+      truncated: false
+    - text: "A new but safe delta: scanning all the name keys means an entity with
+        vertices and a real sprite name under a later key is now read as a
+        sprite with its vertices discarded, where it previously became a
+        polygon. Removing floor makes the proof harder, so the prover catches
+        it."
+      truncated: false
+    - text: The spec says a chamber that fails structural validation is re-asked, but
+        an entity that names no sprite at all is dropped with a note and the
+        rest of the chamber delivered. Every A5 case and every invented name
+        remains a hard error, so neither item fails, but the prose does not
+        describe that path.
+      truncated: false
+    - text: "A latent prover and play-mode divergence on rope length:
+        from_level_entity clamps to ROPE_MIN_LENGTH while world_of does not, and
+        they agree only because the constants are equal and validation rejects
+        shorter ropes."
+      truncated: false
+    - text: A15, and the open-level-untouched halves of A1 and A12, rest on code
+        inspection rather than an automated check, as no egui menu test is
+        possible here.
+      truncated: false
+    - text: "The no-logging test's comment overstates its offline claim: a DNS query
+        for the reserved host does reach the resolver, though no service is
+        contacted and the test is robust to every resolver outcome."
+      truncated: false
+    - text: "Accepted by the user and deliberately unfixed: the spec's repair prose
+        overstating what the repairer does, the brief's arithmetically wrong A9
+        parenthetical, and the spec describing JSON-schema-constrained output
+        where the code sends JSON mode."
+      truncated: false
+    - text: "Still accepted rather than fixed: an empty chamber entity list is
+        accepted, the pre-search settle is not bounds-checked, the
+        duplicate-doorway tolerance is arbitrary, a doorway is not checked to
+        lie on a shared edge, chamber-rect containment is prompted but not
+        enforced, and response_format is droppable."
+      truncated: false
+    - text: The Verifier disclosed that one of its commands carelessly included a
+        touch of /dev/null. No project file was written and git status was
+        byte-identical before and after. Recorded because it was disclosed.
+      truncated: false
+  risks_truncated: false
+  completed_at: 2026-09-28T16:29:57.709Z
+history:
+  - goal_cycle: 1
+    iteration: 1
+    attempt: 0
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: Native Shape artifacts changed
+      truncated: false
+    completed_at: 2026-09-24T15:17:48.912Z
+  - goal_cycle: 2
+    iteration: 1
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A9
+      - A10
+    summary:
+      text: "Independent read-only verification: 16 of 18 acceptance items pass; A9
+        and A10 fail. Runtime's cargo test and cargo build both passed and were
+        reused; the Verifier additionally re-ran the touched test modules (60
+        passed, then 57 passed) and read all six new modules, the full diff of
+        the six modified files, and the relevant parts of sim.rs. The offline
+        guarantee is confirmed: every socket in the suite binds 127.0.0.1:0 or a
+        deliberately freed port, and nothing reaches 11434 or any non-loopback
+        address. Of the two declared deviations, the no-HTTP-crate decision
+        leaves A1 and A2 genuinely met, and the claim that a climb-only geometry
+        cannot exist in this movement kit was checked against sim.rs and found
+        true, with an adequate substitute delivered. A9 fails on its dash case,
+        whose 380 px gap an ordinary running jump already clears, and A10 fails
+        because the failure text the model is sent never states how far the
+        nearest foothold beyond the dying ledge lies, which the target spec
+        requires. Thirteen further risks are recorded, including a repair
+        duplicate-detection bug that can abandon repair early and a worker panic
+        that reaches the user as a cancellation."
+      truncated: false
+    completed_at: 2026-09-24T17:27:04.561Z
+  - goal_cycle: 2
+    iteration: 2
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: "Second independent read-only verification: all 18 acceptance items pass.
+        Runtime's cargo test and cargo build were reused and the Verifier
+        additionally re-ran the full suite (284 passed plus 1 integration test)
+        and read all seven new source files in full plus the complete diff of
+        the six modified ones. Both previously failed items are genuinely fixed:
+        A9's dash case is now a 1000 px gap proven to need the dash, with the
+        width bracketed by two other passing tests rather than by the Builder's
+        arithmetic, and A10's explain now reports the nearest foothold beyond
+        the dying ledge measured from that ledge. All nine claimed bug fixes
+        were corroborated individually, including the pointer arithmetic in the
+        rewritten parse_reply loop (no infinite loop, no skipped candidate,
+        always a char boundary), the per-chamber retry invalidation (no stale
+        chamber can survive, flatten order is stable) and read_chunked's new
+        continue (cannot spin). The offline guarantee holds: every test endpoint
+        is 127.0.0.1 on a locally bound port, Cargo.toml is untouched, and no
+        test writes the editor config. Eleven risks are recorded, none blocking;
+        the most substantive are the approximate reached-filter behind the
+        nearest-foothold report, the repair branch skipping the replay check the
+        un-repaired path performs, and a literal deviation from the spec's
+        cancellation text."
+      truncated: false
+    completed_at: 2026-09-24T17:45:31.362Z
+  - goal_cycle: 2
+    iteration: 2
+    attempt: 1
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: "The user reports that a local model is not working well and asks to
+        replace the model in use with an OpenAI model. This reverses the
+        confirmed non-goal 'Any cloud or hosted model. The endpoint defaults to
+        localhost and no key is sent', and changes decisions D5 (the model runs
+        locally as a running server), D6 (endpoint defaults to localhost) and
+        D11 (no HTTP dependency; plain http only, https refused by design).
+        Reaching api.openai.com requires TLS, which the current hand-rolled
+        client deliberately does not do, and an API key, which is a secret the
+        current design never handles. Returning to Shape to settle: whether
+        local support is dropped or kept with OpenAI as the default; where the
+        API key lives; which model is the default; and what the user actually
+        saw go wrong locally. The implementation that passed 18/18 is untouched
+        on disk."
+      truncated: false
+    completed_at: 2026-09-25T16:27:16.747Z
+  - goal_cycle: 3
+    iteration: 1
+    attempt: 1
+    outcome: fail
+    unresolved_ids:
+      - A2
+      - A23
+    summary:
+      text: "Independent read-only verification of the provider change: 22 of 24 pass,
+        A2 fails and A23 is blocked. Runtime's cargo test and cargo build were
+        reused and the full suite re-run (305 passed plus 1 integration test);
+        all seven new source files and the whole diff of the modified ones were
+        read. A2 is a genuine regression caused by the change: prefilling the
+        default model made the condition guarding load_ai_settings permanently
+        false, so persisted settings are written and never read and a local
+        endpoint reverts to OpenAI on every launch. A23 was not run and must not
+        be assumed: it is a live paid request and no key is set here, so no real
+        model output has been through the pipeline. Of the Builder's claims, the
+        no-escape-hatch half of the TLS claim was verified thoroughly and holds
+        — nothing in shipping code can disable chain or hostname verification —
+        but the claim that the rejection test would fail if verification were
+        broken open is false: that listener never answers, so the test passes
+        either way. The offline guarantee otherwise holds: every socket is
+        loopback except one connect to the reserved 198.51.100.1, api.openai.com
+        is never contacted, and sim.rs is untouched so the prover and play mode
+        remain the same simulation."
+      truncated: false
+    completed_at: 2026-09-25T17:31:32.630Z
+  - goal_cycle: 3
+    iteration: 2
+    attempt: 1
+    outcome: blocked
+    unresolved_ids:
+      - A23
+    summary:
+      text: "Second verification of the provider change: 23 of 24 pass and A23 is
+        blocked because it cannot be run here. Runtime's checks were reused and
+        the full suite re-run twice — once with OPENAI_API_KEY unset and once
+        with a dummy value — 313 passed plus 1 integration test both times,
+        confirming no test is environment-gated and none attempts a live request
+        when a key is present. All three of the Builder's headline claims were
+        checked and hold: A2's fix runs on the real eframe first-frame path, not
+        only in tests; the rewritten TLS control is genuine, since a
+        non-certificate failure would not satisfy its assertion; and the prover
+        bug was real soundness, not cosmetic — unrecorded settle frames changed
+        the parent state of every later move, so a recorded route replayed
+        elsewhere. The fix is complete in practice, every consumer going through
+        replay or route_arrives, which reproduce the pre-search settle
+        identically. Thirteen risks are recorded, the most substantive being a
+        new undisclosed bug (the remembered seed is dead and erases itself), an
+        outline validator stricter than the prompt it validates, and a
+        regression guard that is probably insensitive to the bug it is named
+        for."
+      truncated: false
+    completed_at: 2026-09-25T17:56:09.513Z
+  - goal_cycle: 3
+    iteration: 2
+    attempt: 1
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: "The user asked for the bugs to be fixed before anything else, and
+        deferred the A23 live check. Returning to Build to fix: the remembered
+        seed being dead and self-erasing (load_remembered_model_settings
+        restores settings.seed but never populates seed_text, which is the only
+        place model_settings reads it from, so a restart blanks the seed and the
+        next Generate erases ai_seed from the config); the outline validator
+        being stricter than the prompt it validates (rejecting two doorways
+        between one pair, which is an ordinary upper/lower passage, and
+        requiring every chamber reachable while the prompt asks only for a
+        chain); the pre-search settle not being recorded in Route::segments,
+        which makes the doc comment false and route_secs short; the replay guard
+        omitting the rope fixture that actually caught the settle bug; a stray
+        packet to a reserved address; colliding fixed temp filenames; the
+        chambers clamp disagreeing with the slider; and the TLS tests dialling
+        localhost while binding 127.0.0.1. A23 remains not run."
+      truncated: false
+    completed_at: 2026-09-25T18:23:49.491Z
+  - goal_cycle: 3
+    iteration: 3
+    attempt: 1
+    outcome: blocked
+    unresolved_ids:
+      - A23
+    summary:
+      text: "Third verification of the provider change: 23 of 24 pass and A23 remains
+        blocked because it cannot be run here. All of this round's fixes were
+        checked and hold. The settle-recording change, the riskiest edit since
+        it touches every proof, was verified structurally rather than by
+        fixture: the opening segment is attached on all three paths that can
+        return a Route, start_frames can never be zero, every advance of the
+        simulation is now recorded, and since Simulation carries all its state
+        internally with no RNG, clock or globals, replay driven by the same
+        frames reaches the identical state — so route_arrives is now provably
+        true for every Reachable verdict and route.duration() is no longer
+        short. The seed fix is on the real eframe startup path and a request
+        made after a restart carries the seed; reverting it fails four tests.
+        The connections relaxation lets two genuine passages through while still
+        refusing a doorway stated twice, and the prompt now states both rules
+        the validator enforces. No previously-passing item was damaged and no
+        spec contradiction was found. Eleven risks are recorded, the most
+        substantive being that the guard for this round's own fix is weaker than
+        it looks and that the pre-search settle is not bounds-checked."
+      truncated: false
+    completed_at: 2026-09-25T18:37:41.454Z
+  - goal_cycle: 3
+    iteration: 3
+    attempt: 1
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: "The user ran the feature against the real OpenAI API — the first time any
+        of this has met a live model — and it failed immediately with HTTP 400:
+        \"Unsupported value: 'temperature' does not support 0.4 with this model.
+        Only the default (1) value is supported.\" This is a genuine defect in
+        chat_request_body, which hardcodes temperature 0.4 (ai_client.rs:368).
+        It was invisible to every offline test because the stub servers accept
+        any body. It also exposes a class of bug rather than one instance: the
+        request carries seed as well, which the same generation of models is
+        liable to reject in the same way, so fixing only temperature would
+        likely just move the failure. Returning to Build to stop sending
+        temperature at all and to add a bounded recovery that drops an
+        unsupported parameter named in a 400 and retries once, with the live
+        evidence recorded. A23 still cannot be run by the assistant:
+        OPENAI_API_KEY is not set in its environment."
+      truncated: false
+    completed_at: 2026-09-25T19:22:43.560Z
+  - goal_cycle: 3
+    iteration: 4
+    attempt: 0
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: "Second live run against OpenAI. The temperature defect is fixed: the
+        request now reaches the model and the outline came back usable, with
+        real chamber names. It then failed in a chamber: 'the chamber \"West
+        Entry Hall\" never came back usable — bitmap 4's \"position\" must be
+        [x, y]'. The model was re-asked the full MAX_CHAMBER_RETRIES times and
+        repeated the same shape each time, so this is a systematic
+        representation preference, not a slip: parse_entities demands a point be
+        exactly a two-element JSON array, and the model is evidently writing
+        something equivalent but different, most likely {\"x\":..,\"y\":..}. The
+        fix is tolerance, in the same spirit as the lenient JSON extraction
+        already in the client: accept any unambiguous spelling of a point and of
+        a size, everywhere a point is read (entity positions and sizes, polygon
+        vertices, the outline's spawn, exit, chamber rects and connection
+        points), and put the offending value into the error text so the next
+        failure is diagnosable by the model on retry and by the user in a
+        report. Returning to Build."
+      truncated: false
+    completed_at: 2026-09-25T19:35:49.799Z
+  - goal_cycle: 3
+    iteration: 5
+    attempt: 0
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: "Third live run, with gpt-5.6-terra, 5 chambers, seed 0. The
+        point-spelling tolerance worked: the outline parsed and a chamber got as
+        far as its seventh entity before failing with 'bitmap 6 has no
+        \"bitmap_name\"', again through every retry. The same lesson as last
+        time, one field along: the model is naming its sprites under some other
+        key, and the parser insists on one exact key. The error also failed to
+        say what the entity did contain, which is an oversight from the last
+        round — values were made visible in messages, but a missing key still
+        reports only what was wanted. Returning to Build to accept the other
+        spellings of an entity's name and type, to infer the entity kind from
+        its content when \"type\" is absent, and to list the keys an entity
+        actually had when nothing usable is found. The assistant still cannot
+        run the live check: OPENAI_API_KEY is not in its environment and there
+        is no keychain item to read it from."
+      truncated: false
+    completed_at: 2026-09-25T20:16:27.400Z
+  - goal_cycle: 3
+    iteration: 6
+    attempt: 0
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: "The user reports storing the key in the macOS keychain so the assistant
+        can run the live check. The assistant can read the login keychain from
+        its shell, but a metadata search finds no entry mentioning openai under
+        any name, so the item does not appear to exist — most likely the
+        interactive add-generic-password prompt was not completed. Rather than
+        keep guessing at service names, A23 is being given a concrete runnable
+        form: an #[ignore]d test that builds the real HttpModelClient from
+        OPENAI_API_KEY and runs the whole pipeline against the live service with
+        the user's own parameters, asserting the delivered level is
+        in-vocabulary, carries spawn, exit and level_size, and has a route the
+        prover confirms and replays. It is ignored by default so the ordinary
+        suite stays offline, and it can be run by whoever has the key with one
+        command. Returning to Build to add it."
+      truncated: false
+    completed_at: 2026-09-25T20:22:12.929Z
+  - goal_cycle: 3
+    iteration: 7
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: "All 24 acceptance items pass. Runtime's checks were reused and the suite
+        re-run: 336 passed, 0 failed, 1 ignored — the ignored one being A23,
+        which is the only #[ignore] in the tree, so the ordinary suite stays
+        entirely offline. A23 is now evidence rather than an open question: it
+        has been run live twice against OpenAI and passed both times, and the
+        check itself was read line by line and judged sound — it refuses to run
+        without a key before building any client, uses the real HTTP client so a
+        pass requires a real round trip, and re-proves and replays the delivered
+        route rather than trusting the pipeline's own verdict. The
+        drop-an-unidentifiable-entity policy was traced end to end against A4
+        and A5 and does not swallow anything either requires to be rejected: an
+        invented name is still an error, all four structural faults are still
+        hard errors, and a reply where nothing is usable is still an error. Nine
+        risks are recorded, the most substantive being that the shipped default
+        model has never been exercised live, a reporting bug where skipped notes
+        accumulate across retries, and an entity with vertices but a bitmap type
+        being dropped as though it were a decoration."
+      truncated: false
+    completed_at: 2026-09-28T12:09:05.301Z
+  - goal_cycle: 3
+    iteration: 7
+    attempt: 1
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: "The user chose to fix the verification's findings before archiving. Four
+        items: the skipped-entity notes accumulate across proof retries so the
+        result panel can name a drop that is not in the delivered level or name
+        it twice; an entity carrying vertices but a bitmap type is dropped as a
+        decoration when it was collision geometry; the A23 test asserts nothing
+        about the level being non-empty and does not require an endpoint that
+        needs a key, so it could pass against a local stub; and the shipped
+        default model gpt-6-astra has never been exercised live, which is a
+        first-run failure for a real user and the one thing the offline suite
+        cannot see. After the code fixes, one live A23 run against the shipped
+        default to close the last of them."
+      truncated: false
+    completed_at: 2026-09-28T12:31:31.957Z
+  - goal_cycle: 3
+    iteration: 8
+    attempt: 2
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: "All 24 acceptance items pass, with one defect the Builder should fix
+        before archiving. The suite was re-run against this tree: 340 passed, 0
+        failed, 1 ignored — the ignored one being A23, the only #[ignore] in the
+        tree, so the ordinary suite stays offline. The narrowed vertices rule
+        was hand-traced across nine cases and is correct for all of them,
+        including the two bugs the previous round's broader rule introduced: a
+        null or empty vertices field on a sprite no longer condemns a chamber,
+        and a named sprite is no longer turned into solid geometry. A4's and
+        A5's guarantees were re-derived and hold. But a residue of the same bug
+        class survives in read_named, which takes the first present key rather
+        than the first holding a real sprite name, so an entity carrying a human
+        label alongside a correct sprite name can still become a platform
+        silently or condemn its chamber needlessly. A23 is recorded as passed on
+        the Builder's four live runs, with the harness independently audited and
+        found unfakeable by the code under test, but not re-run by the Verifier.
+        Note on bookkeeping: the handoff recorded for this candidate describes
+        an earlier iteration, because the tree was edited during Verify; the
+        Verifier assessed the tree as it actually stands."
+      truncated: false
+    completed_at: 2026-09-28T13:09:08.133Z
+  - goal_cycle: 3
+    iteration: 8
+    attempt: 2
+    outcome: recovery
+    unresolved_ids: []
+    summary:
+      text: "The user chose to fix the read_named defect and leave the three
+        documentation inaccuracies as recorded known limitations. read_named
+        takes the first present key rather than the first whose value is a real
+        sprite name, so an entity carrying a human label alongside a correct
+        sprite name — {\"name\": \"spiked pit\", \"sprite\":
+        \"death_trap_tool\"} — stops at the label, concludes nothing claims to
+        be a sprite, and with vertices present becomes a solid platform: a
+        hazard silently turned into floor, which the route proof can never catch
+        because added floor only makes a route easier. The same cause
+        over-rejects without vertices, condemning a chamber whose entity was
+        named correctly under a later key. The polygon-type lookup already
+        prefers a key whose value is a real type; the sprite lookup will be made
+        to match. Left as known limitations: the spec's repair prose promising
+        to lower or extend ledges when the code only adds stepping stones, the
+        brief's arithmetically wrong A9 parenthetical, and the spec describing
+        JSON-schema-constrained output where the code sends JSON mode."
+      truncated: false
+    completed_at: 2026-09-28T16:10:57.065Z
+  - goal_cycle: 3
+    iteration: 9
+    attempt: 1
+    outcome: pass
+    unresolved_ids: []
+    summary:
+      text: "All 24 acceptance items pass, with no new correctness bug from the fix
+        and nothing previously passing damaged. The suite was reproduced against
+        this tree: 343 passed, 0 failed, 1 ignored — the ignored one being A23,
+        the only #[ignore] in the tree. The read_known fix was hand-traced
+        across every case asked for plus roughly fifteen adversarial variants: a
+        label no longer hides a real sprite name, a labelled hazard carrying
+        vertices stays a hazard rather than becoming a platform, an invented
+        name is still rejected wherever it is written, a polygon keeps its
+        climbability when a label shadows its type, and the original mislabelled
+        floor is still read as geometry. A4's guarantee that no unknown name
+        reaches the canvas was re-derived by construction rather than by test,
+        by enumerating every entity construction site and confirming
+        parse_entities is the only path from model JSON to an entity. A23 is
+        recorded as passed on five live runs with the harness independently
+        audited and found unfakeable by the code under test. The remaining risks
+        are low severity, and the two that are behaviour deltas from this fix
+        both fail in the safe direction."
+      truncated: false
+    completed_at: 2026-09-28T16:29:57.709Z
+history_overflow:
+  dropped_entries: 0
+  first_dropped_at: null
+  last_dropped_at: null
+  outcome_counts:
+    pass: 0
+    fail: 0
+    blocked: 0
+    execution-error: 0
+    recovery: 0
+verification_result: pass
+verification_report: verification.md
+archived: true
+created_at: 2026-09-24T14:23:44.329Z

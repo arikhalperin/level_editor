@@ -14,6 +14,16 @@ rfd = "0.12"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["fmt", "env-filter"] }
 dirs = "5.0"
+# TLS for reaching OpenAI. The HTTP framing is this project's own (see `ai_client.rs`); only
+# the encrypted stream comes from here, which keeps the trust store under our control — the
+# tests supply their own root for a local TLS listener rather than the client needing a
+# "trust anything" switch. `ring` rather than the default provider, which wants cmake.
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+webpki-roots = "1"
+
+[dev-dependencies]
+# Generates the self-signed certificate the TLS test's local listener presents.
+rcgen = "0.14"
 
 # objc2 0.4 (pulled in via eframe 0.27 -> winit 0.29 -> icrate) verifies ObjC
 # method signatures under debug_assertions. On recent macOS, NSFastEnumeration's
