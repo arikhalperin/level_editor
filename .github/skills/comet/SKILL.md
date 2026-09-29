@@ -1,13 +1,13 @@
 ---
 name: comet
-description: "Comet workflow entry. Use when the user invokes /comet or asks to use Comet without choosing Native or Classic; resolve and load exactly one entry from project configuration."
+description: 'Comet workflow entry. Use when the user invokes /comet or asks to use Comet without choosing Native or Classic; load Native or Classic from project configuration.'
 ---
 
 # Comet Entry
 
-`/comet` only selects an entry. It does not contain either workflow's execution method.
+`/comet` selects Native or Classic from project configuration, then passes the request to that workflow's Skill.
 
-Once this Skill is loaded, treat the `/comet` entry as selected. Immediately perform the entry resolution below; do not re-evaluate whether the task is suitable for Comet, and do not merely explain why it will not be used.
+Once this Skill is loaded, immediately follow the steps below. The user has already chosen Comet: continue their request without reconsidering whether to use it or merely explaining why you would not proceed.
 
 1. Run the Comet CLI installed on PATH in the current project:
 
@@ -15,13 +15,23 @@ Once this Skill is loaded, treat the `/comet` entry as selected. Immediately per
    comet workflow resolve . --activate --json
    ```
 
-   If project config is missing, this snapshots global defaults and creates project artifact directories. Later global changes do not rewrite it.
-2. Parse the JSON. Only accept `schema: comet.workflow-resolution.v1` and a `skill` value listed below.
-   If it returns `command not found`, stop and report an incomplete CLI install. If the CLI starts but exits nonzero, returns invalid JSON, or reports invalid config, stop with the original error. Do not search for Skill files, scan platform configuration directories, or invoke an internal bundle directly. Never fall back or guess.
-3. Select exactly one entry based only on the returned `skill`. Immediately use the Skill tool to load that entry, and load no other entry:
-    - `/comet-native` → **Execute immediately:** Use the Skill tool to load the `comet-native` skill. Do not skip this step.
-    - `/comet-classic` → **Execute immediately:** Use the Skill tool to load the `comet-classic` skill. Do not skip this step.
+   If the project has no `.comet/config.yaml`, this command saves the global defaults in the project and creates the configured artifact directories. Later changes to global defaults do not overwrite this project's saved configuration.
 
-   After the skill is loaded, pass the user's original request unchanged to the loaded entry Skill as its user input.
+   On `command not found`, `executable not found`, or `ENOENT`, stop and report an incomplete Comet CLI installation. Do not search for Skill files, scan platform configuration directories, or invoke an internal bundle directly.
 
-Do not switch workflows based on task size, file count, active changes, or model judgment. Native and Classic changes, states, and artifacts always remain independent.
+   If the CLI starts but exits nonzero, cannot parse the configuration, or returns invalid JSON or fields, preserve the original error and stop. Do not choose another entry yourself.
+
+2. Parse the JSON. Only accept `schema: comet.workflow-resolution.v1` and one of the two `skill` values below.
+3. Immediately use the Skill tool to load the entry named by `skill`. Load exactly one entry:
+   - `/comet-native` → **Execute immediately:** Use the Skill tool to load the `comet-native` skill. Do not skip this step.
+   - `/comet-classic` → **Execute immediately:** Use the Skill tool to load the `comet-classic` skill. Do not skip this step.
+
+   Pass the user's original request unchanged to that Skill.
+
+After workflow selection, the selected Skill locates the change's workspace and current phase, then loads task context, personal memory, and project knowledge; use `comet memory context` when needed.
+
+Load context as needed. First use `comet task ... --json` to obtain a Context Manifest containing only summaries, reasons for recommending each item, and stable IDs. Add `--expand-context "<id>"` when the step needs the full text, source, or verification method.
+
+After using an item and establishing its outcome, report the actual result with its returned application ID: `--application "<application-id>" --outcome used-successfully|ignored|overridden|corrected|contributed-to-failure`. Do not report successful use of an item that was not used.
+
+Do not switch workflows based on task size, file count, active changes, or model judgment. Native and Classic manage their own changes, state, and artifacts.

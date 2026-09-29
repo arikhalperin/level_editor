@@ -23,3 +23,16 @@ native:
   archive_confirmation: automatic
   # Maximum failed Verify outcomes allowed for one confirmed acceptance target before Native stops the completion loop.
   max_verify_failures: 5
+# Project policy for automatic personal-memory learning and retrieval.
+memory:
+  # Allows workflow events in this project to form new personal memories automatically.
+  # learning: true | false
+  learning: true
+  # Allows personal memories to be injected into Agent context for this project.
+  # retrieval: true | false
+  retrieval: true
+# Project knowledge retrieval provider used by ordinary Comet tasks.
+knowledge:
+  # Provider for project knowledge.
+  # provider: local | remote
+  provider: local

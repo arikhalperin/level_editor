@@ -28,11 +28,6 @@ Thumbs.db
 
 # Python MCP venv
 mcp_rust_game_editor/.venv/
-# >>> Comet managed project state >>>
-!/.comet/
-/.comet/*
-!/.comet/config.yaml
-# <<< Comet managed project state <<<
 
 # Python bytecode
 __pycache__/
@@ -53,3 +48,13 @@ CLAUDE.md
 /test_simple.json
 /test_deserialize.rs
 /src/test_deser.rs
+# CodeGraph's index of this repository: a SQLite database and its write-ahead log,
+# rebuilt from the source on any machine that wants one, plus a running daemon's socket,
+# pid and log. Per-host state, and 146 MB of it.
+/.codegraph/
+
+# >>> Comet managed project state >>>
+!/.comet/
+/.comet/*
+!/.comet/config.yaml
+# <<< Comet managed project state <<<
